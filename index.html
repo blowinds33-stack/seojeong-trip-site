@@ -134,6 +134,7 @@ textarea{min-height:70px;resize:vertical}
   <aside>
     <div class="brand"><div class="mark">서</div><div><b>서정 출장서류</b><small>입학본부 · 출장 승인에서 결의까지</small></div></div>
     <button class="btn pri" id="newTrip">+ 새 출장</button>
+    <button class="btn" id="newImport">+ 결의만 시작 (승인은 받은 건)</button>
     <button class="btn" id="openSettings" hidden>설정 · 백업</button>
     <div class="tree" id="tree"><div class="note">출장 목록을 불러오는 중입니다.</div></div>
     <div class="note" id="conn"></div>
@@ -572,7 +573,7 @@ function resolutionsFor(ap){
   if (ap.kind==='fee') return [{k:'fee', n:'분담금 결의', hold:true}];
   return ap.pay==='corp' ? [{k:'card1', n:'법카 1차 결의'},{k:'final', n:'최종 출장 결의'}] : [{k:'final', n:'최종 출장 결의'}];
 }
-function apLabel(ap){ return ap.kind==='fee' ? '분담금 승인' : '출장 승인'; }
+function apLabel(ap){ return (ap.kind==='fee' ? '분담금 승인' : '출장 승인') + (ap.imported ? '(기존)' : ''); }
 function apStatus(ap){
   if (ap.mergedAt) return '<span class="pill ok">증빙일체 완료</span>';
   if (ap.planPdf) return '<span class="pill acc">PDF 첨부됨</span>';
@@ -651,6 +652,7 @@ function renderSettings(m){
       S.trips=await Store.list(); renderTree(); $('#bkMsg').textContent=`출장 ${trips.length}건을 불러왔습니다.`; }
     catch(err){ $('#bkMsg').textContent='백업 파일을 읽지 못했습니다: '+err.message; } };
 }
+$('#newImport').onclick = () => { S.cur = null; S.imp = null; S.view = 'import'; render(); renderTree(); };
 function openTrip(id){ S.cur = JSON.parse(JSON.stringify(S.trips.find(t=>t.id===id))); (S.cur.approvals||[]).forEach(a=>a.drafting=false); (S.cur.files||[]).forEach(f=>{ if(f.role==='항공 이티켓·영수증') f.role=guessRole(f.name)==='항공 결제 영수증'?'항공 결제 영수증':'항공 이티켓'; if(f.role==='숙박 영수증') f.role='숙박 결제 영수증'; }); S.view = S.cur.approvals?.length ? 'review':'input'; S.apId = S.cur.approvals?.[0]?.id || null; render(); renderTree(); }
 function openAp(id){ S.apId=id; S.view='review'; render(); }
 
@@ -660,6 +662,7 @@ function render(){
   if (S.view==='input' && S.cur) return renderInput(m);
   if (S.view==='review' && S.cur) return renderReview(m);
   if (S.view==='settings') return renderSettings(m);
+  if (S.view==='import') return renderImport(m);
   if (S.view==='res' && S.cur) return renderRes(m);
   m.innerHTML = `
     <h1>출장 서류 자동 작성</h1>
@@ -1076,6 +1079,7 @@ async function draft(t, ap){
 
 /* ---------- 화면 3: 검토·출력 ---------- */
 function apTotals(t, ap){
+  if (ap.fixed && ap.kind!=='fee'){ const A=approvedBy(t, ap); return {group:'교원 국외여비', rows:[['항공운임비','운임비'],['숙박비','숙박비'],['식비','식비'],['일비','일비']].map(([c,g])=>({cat:c, calc:'승인 문서 금액', amt:A[g]}))}; }
   if (ap.kind==='fee'){ const rows=(t.feeRows||[]).map(r=>({cat:r.cat, calc:`${r.label}: ${won(r.amt)}원`, amt:r.amt})); return {group:'', rows}; }
   return travelBudget(t);
 }
@@ -1147,6 +1151,7 @@ function missing(t, ap){
 function renderReview(m){
   const t=S.cur, ap=t.approvals.find(a=>a.id===S.apId)||t.approvals[0];
   if (!ap){ S.view='input'; return render(); }
+  if (ap.imported){ S.apId=ap.id; return renderImportedAp(m, t, ap); }
   S.apId=ap.id;
   const tabs=t.approvals.map(a=>`<button type="button" data-tab="${a.id}" class="${a.id===ap.id?'on':''}">${apLabel(a)} · ${esc(a.budget.b)}</button>`).join('');
   const miss=missing(t,ap), ev=evidenceList(t,ap);
@@ -1467,11 +1472,17 @@ function krwOf(rs, x){
   const r = rateFor(rs, x.cur), v = num(x.amt) * r;   // 원 단위: 기본 반올림(미얀마·고등 정산표 ROUND), 버림 선택 가능(키르기스스탄 ROUNDDOWN)
   return r ? (rs.rounding==='floor' ? Math.floor(v + 1e-6) : Math.round(v)) : 0;
 }
-function limitsFor(t, ap, rs){
+/* 항목별 승인액(+추가예산). 불러온 승인은 문서 금액 그대로(ap.fixed) */
+function approvedBy(t, ap){
   const lim = {운임비:0, 숙박비:0, 식비:0, 일비:0};
-  if (ap.kind==='fee') return lim;
-  travelBudget(t).rows.forEach(r => { const g = r.cat==='항공운임비' ? '운임비' : r.cat; if (lim[g]!==undefined) lim[g] += r.amt; });
-  GROUPS.forEach(g => lim[g] += num(ap.extra?.[g]));               // 추가예산 승인
+  if (ap.fixed) GROUPS.forEach(g => lim[g] = num(ap.fixed[g]));
+  else travelBudget(t).rows.forEach(r => { const g = r.cat==='항공운임비' ? '운임비' : r.cat; if (lim[g]!==undefined) lim[g] += r.amt; });
+  GROUPS.forEach(g => lim[g] += num(ap.extra?.[g]));   // 추가예산 승인(고등 사례: 항공 +5,000,000)
+  return lim;
+}
+function limitsFor(t, ap, rs){
+  if (ap.kind==='fee') return {운임비:0, 숙박비:0, 식비:0, 일비:0};
+  const lim = approvedBy(t, ap);
   if (rs.kind==='card1') { lim.식비 = 0; lim.일비 = 0; }            // 1차(법카)는 항공·숙박만
   return lim;
 }
@@ -1587,6 +1598,13 @@ function renderRes(m){
   document.querySelectorAll('[data-res]').forEach(b => b.onclick = () => { S.resId = b.dataset.res; render(); });
   document.querySelectorAll('[data-rtab]').forEach(b => b.onclick = () => { S.resTab = b.dataset.rtab; render(); });
   const body = $('#resBody');
+  if (rs.external) {   // 앱 밖에서 이미 끝낸 1차 결의: 지급액만 기록
+    body.innerHTML = `<div class="card stack"><h2>기존에 완료한 1차 결의</h2><p class="note">1차 결과보고서에서 읽은 항목별 지급액입니다. 최종 결의의 기집행액으로 들어갑니다.</p>
+      <div class="grid">${[['운임비','항공'],['숙박비','숙박'],['식비','식비'],['일비','일비']].map(([k,n])=>`<label class="f"><span>${n}</span><input type="text" data-ext="${k}" value="${won(rs.settledBy?.[k]||0)}"></label>`).join('')}</div></div>`;
+    document.querySelectorAll('[data-ext]').forEach(el => el.onchange = async () => { rs.settledBy[el.dataset.ext] = num(el.value); rs.settledTotal = GROUPS.reduce((s,g)=>s+num(rs.settledBy[g]),0); await saveTrip(t); renderTree(); });
+    document.querySelectorAll('[data-rtab]').forEach(b => b.disabled = true);
+    return;
+  }
   if (S.resTab==='report') return renderResReport(body, t, ap, rs);
   if (S.resTab==='done') return renderResDone(body, t, ap, rs);
   return renderResSettle(body, t, ap, rs);
@@ -1740,16 +1758,14 @@ function reportSpec(t, ap, rs){
             {kind:'head',text:'추진결과 :'}, ...R.results.map((x,i)=>({kind:'item',text:x,key:'results.'+i})),
             {kind:'head',text:'세부일정 :'}, ...R.schedule.flatMap((sc,i)=>[{kind:'date',text:mdw(sc.date)}, ...sc.lines.map((l,j)=>({kind:'item',text:l,key:`schedule.${i}.${j}`}))])];
     const curs = Object.keys(rs.rates).filter(c=>rs.rates[c]?.rate);
-    remarks = [...(curs.length?[`출장복명일 (${dotDate(rs.rateDate)}) 기준 고시 환율로 국외 여비 정산 처리함.`, ...curs.map(c=>`${c} 환율 ${rs.rates[c].rate}`)]:[]), '세부 내역은 붙임 정산표 참조'];
+    remarks = [...(curs.length?[`출장복명일 (${dotDate(rs.rateDate || addDays(t.end, 1))}) 기준 고시 환율로 국외 여비 정산 처리함.`, ...curs.map(c=>`${c} 환율 ${rs.rates[c].rate}`)]:[]), '세부 내역은 붙임 정산표 참조'];
   }
   if (rs.kind==='fee'){
     const items = feeItems(t, ap, rs), A = items.reduce((s,x)=>s+x.approved,0), N = items.reduce((s,x)=>s+num(x.now),0);
     budget = {rows: items.map(x=>({item:x.item, calc:x.calc, approved:won(x.approved), prior:'0', now:won(x.now), remain:won(x.approved-num(x.now)), rate:pct(x.approved, num(x.now))})),
               total: {approved:won(A), prior:'0', now:won(N), remain:won(A-N), rate:pct(A,N)}};
   } else {
-    const st = settle(t, ap, rs), pb = priorBy(ap, rs), lim = {운임비:0,숙박비:0,식비:0,일비:0};
-    travelBudget(t).rows.forEach(x=>{ const g=x.cat==='항공운임비'?'운임비':x.cat; if(lim[g]!==undefined) lim[g]+=x.amt; });
-    GROUPS.forEach(g => lim[g] += num(ap.extra?.[g]));   // 추가예산 승인(고등 사례: 항공 +5,000,000)
+    const st = settle(t, ap, rs), pb = priorBy(ap, rs), lim = approvedBy(t, ap);
     const A = GROUPS.reduce((s,g)=>s+lim[g],0), P0 = GROUPS.reduce((s,g)=>s+pb[g],0), N = st.total;
     const perCat = rs.kind==='card1' || P0 > 0;   // 1차가 있으면 항목별로(요양보호 1차 결과보고서 형식)
     budget = perCat
@@ -2090,6 +2106,213 @@ function renderCardDone(el, t, ap, rs){
       rs.mergedAt = Date.now(); rs.settledTotal = st.total; rs.settledBy = Object.fromEntries(GROUPS.map(g=>[g, st.by[g].sum])); await saveTrip(t); renderTree();
       msg.textContent = `${out.getPageCount()}쪽 PDF를 저장했습니다.`; }
     catch (e) { msg.textContent = '만들지 못했습니다: ' + e.message; } };
+}
+
+/* ================= 결의만 시작 (승인은 이미 다른 사람이 올린 경우) =================
+   승인 운영계획서·승인공문·추가예산 공문·1차 결과보고서를 읽어 승인액을 '문서 금액 그대로' 고정하고 결의로 바로 들어간다.
+   근거 사례: 2026.09 고등해외출장결의서(승인은 타인, 1차 결의 후 최종 결의만 작성) */
+
+const IMPORT_ROLES = ['승인 운영계획서·승인공문', '추가예산 승인', '1차 결과보고서', '1차 지급서류', '기타'];
+const CAT_OF = s => /항공|운임/.test(s) ? '운임비' : /숙박/.test(s) ? '숙박비' : /식비/.test(s) ? '식비' : /일비/.test(s) ? '일비' : null;
+
+/* PDF 글자를 줄 단위로 (같은 높이의 글자 조각을 한 줄로) */
+async function pdfLines(blob, maxPages = 4){
+  const doc = await pdfjsLib.getDocument({data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false}).promise, lines = [];
+  for (let i = 1; i <= Math.min(doc.numPages, maxPages); i++) {
+    const items = (await (await doc.getPage(i)).getTextContent()).items.filter(x => x.str.trim());
+    const rows = [];
+    for (const it of items) { const y = it.transform[5], x = it.transform[4]; let r = rows.find(r => Math.abs(r.y - y) < 3); if (!r) rows.push(r = {y, parts: []}); r.parts.push({x, w: it.width || 0, h: Math.abs(it.transform[3]) || 10, s: it.str}); }
+    rows.sort((a, b) => b.y - a.y).forEach(r => { const ps = r.parts.sort((a, b) => a.x - b.x); let line = '', end = null;
+      for (const p of ps) { const gap = end == null ? 0 : p.x - end; line += (end != null && gap > p.h * 0.25 ? ' ' : '') + p.s; end = p.x + p.w; }   // 글자 사이가 붙어 있으면 빈칸 없이 잇는다
+      lines.push(line.replace(/\s+/g, ' ').trim()); });
+  }
+  return lines;
+}
+const numsIn = line => (line.match(/(?:^|\s)(-|\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)(?=\s|$)/g) || []).map(s => s.trim()).map(s => s === '-' ? 0 : Number(s.replace(/,/g, '')));
+
+/* 승인 운영계획서(또는 승인공문 증빙서류) → 기본정보·승인액 */
+function parseApproval(lines){
+  const all = lines.join('\n'), out = {budget: {}, extra: {}, feeRows: []};
+  const ti = lines.findIndex(l => /^구\s*분/.test(l));
+  out.title = lines.slice(0, Math.max(0, ti)).join(' ').replace(/(운영계획서|추가예산).*$/, '').replace(/\s+/g, ' ').trim();
+  out.fund = /앵커/.test(all) ? '앵커' : /혁신/.test(all) ? '혁신' : '등록금';
+  const codes = all.match(/[A-E]\d[a-z]\d{4}-\d+|[A-E]\d{6}-\d+/g) || []; out.codes = [...new Set(codes)];
+  const dm = all.match(/(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*(?:\(\s*.\s*\))?\s*[~∼-]\s*(?:(\d{4})\s*\.\s*)?(\d{1,2})\s*\.\s*(\d{1,2})/);
+  if (dm) { const y2 = dm[4] || dm[1]; out.start = `${dm[1]}-${dm[2].padStart(2,'0')}-${dm[3].padStart(2,'0')}`; out.end = `${y2}-${dm[5].padStart(2,'0')}-${dm[6].padStart(2,'0')}`; }
+  const tm = all.match(/(?:대\s*상|출\s*장\s*자)\s*[:：]\s*([^\n(]+)/); if (tm) out.travelers = tm[1].split(/[,，、]/).map(s => koName(s)).filter(Boolean);
+  const pm = all.match(/장\s*소\s*[:：]\s*([^\n]+)/); if (pm) out.place = pm[1].trim();
+  const rm = all.match(/환율[^\n]*?(\d,\d{3}(?:\.\d+)?)\s*원/); if (rm) out.rate = Number(rm[1].replace(/,/g, ''));
+  const ex = all.match(/공식 일정이 없어[^\n]*제외/); if (ex) out.excludeDays = 1;
+  out.pay = /법인카드\s*사용\s*(신청\s*)?예정|법카/.test(all) ? 'corp' : 'personal';
+  const sec = (from, to) => { const a = lines.findIndex(l => from.test(l)); if (a < 0) return []; let b = lines.slice(a + 1).findIndex(l => to.test(l)); b = b < 0 ? lines.length : a + 1 + b; return lines.slice(a, b); };
+  const bullets = (arr, mark) => arr.map(l => l.replace(/^(추진목표|추진계획|과제내용)\s*/, '')).filter(l => l.trim().startsWith(mark)).map(l => l.trim().replace(/^[□\-Ÿ·]\s*/, ''));
+  out.goals = bullets(sec(/추진목표|□/, /전략과제/), '□').slice(0, 4);
+  out.items = bullets(sec(/세부내용/, /기대효과/), '-').slice(0, 10);
+  out.effects = bullets(sec(/기대효과/, /세부일정|비고|소요예산/), '-').slice(0, 6);
+  // 소요예산: 추가예산 공문은 (A)기승인 (B)추가 (C)합계 열
+  const isExtra = /추가예산\s*\(B\)|추가예산\(B\)/.test(all);
+  const bi = lines.findIndex(l => /소요예산|구분\s+산출내역/.test(l));
+  for (const l of lines.slice(Math.max(0, bi))) {
+    if (/합계/.test(l)) continue;
+    const ns = numsIn(l).filter(n => n >= 1000 || n === 0); if (!ns.length) continue;
+    const cat = CAT_OF(l);
+    if (cat) { const last = ns[ns.length - 1]; if (isExtra && ns.length >= 3) { out.budget[cat] = last; out.extra[cat] = ns[ns.length - 2]; } else out.budget[cat] = last; }
+    else if (/분담금|홍보|현수막|리플|비자|회비|참가비/.test(l)) out.feeRows.push({label: l.split(/[:：\d]/)[0].trim() || '항목', amt: ns[ns.length - 1]});
+  }
+  out.isExtra = isExtra;
+  return out;
+}
+/* 1차 결과보고서 → 항목별 금회 사용액(=다음 결의의 기집행액) */
+function parseCard1(lines){
+  const by = {};
+  const ei = lines.findIndex(l => /집행예산/.test(l));
+  for (const l of lines.slice(Math.max(0, ei))) {
+    const cat = CAT_OF(l); if (!cat || /합계/.test(l)) continue;
+    const ns = numsIn(l); if (ns.length >= 4) by[cat] = (by[cat] || 0) + ns[ns.length >= 5 ? ns.length - 3 : 2];   // 승인액·기집행·금회·잔액·집행률 중 금회
+  }
+  return by;
+}
+
+function renderImport(m){
+  const I = S.imp = S.imp || {files: [], travelers: '', budget: {}, extra: {}, prior: {}, kind: 'travel', pay: 'corp', b: '혁신', rank: '일반 교직원'};
+  const G = [['운임비','항공'],['숙박비','숙박'],['식비','식비'],['일비','일비']];
+  const found = I.code ? BUDGET.find(r => r.nc === I.code || r.oc === I.code) : null;
+  m.innerHTML = `
+    <h1>결의만 시작</h1>
+    <p class="sub">승인은 이미 받은 건입니다. 승인 운영계획서·승인공문과 1차 결의 자료를 올리면 금액을 문서 그대로 가져와 결의로 바로 들어갑니다.</p>
+    <div class="stack">
+      <div class="card stack">
+        <h2>자료 올리기</h2>
+        <div class="drop" id="imDrop">승인 운영계획서(승인공문 증빙서류), 추가예산 승인 공문, 1차 결과보고서를 끌어다 놓으세요<input type="file" id="imFi" multiple accept=".pdf" hidden></div>
+        <div class="files">${I.files.map((f,i)=>`<div class="file"><span class="nm">${esc(f.name)}</span><select data-imr="${i}">${IMPORT_ROLES.map(r=>`<option ${f.role===r?'selected':''}>${r}</option>`).join('')}</select><button class="x" data-imdel="${i}" aria-label="삭제">×</button></div>`).join('')}</div>
+        <div class="row"><button class="btn" id="imRead" ${I.files.length?'':'disabled'}>자료에서 읽기</button><span class="note" id="imMsg">${esc(I.msg||'')}</span></div>
+      </div>
+      <div class="card stack">
+        <h2>읽은 내용 확인</h2>
+        <div class="grid">
+          <label class="f" style="grid-column:1/-1"><span>제목(세부프로그램명)</span><input type="text" id="im_title" value="${esc(I.title||'')}"></label>
+          <label class="f"><span>프로그램 코드(신·구 어느 쪽이든)</span><input type="text" id="im_code" value="${esc(I.code||'')}"></label>
+          <div class="note">${found?`기준표: ${esc(found.b)} · ${esc(found.pg)} · ${esc(found.oc||'')}/${esc(found.nc)}`:I.code?'<span class="pill warn">기준표에 없는 코드 · 예산 종류를 골라 주세요</span>':''}</div>
+          <label class="f"><span>예산 종류</span><select id="im_b">${['등록금','혁신','앵커'].map(b=>`<option ${I.b===b?'selected':''}>${b}</option>`).join('')}</select></label>
+          <label class="f"><span>승인 종류</span><select id="im_kind"><option value="travel" ${I.kind==='travel'?'selected':''}>출장</option><option value="fee" ${I.kind==='fee'?'selected':''}>분담금</option></select></label>
+          <label class="f"><span>출국일</span><input type="date" id="im_start" value="${I.start||''}"></label>
+          <label class="f"><span>귀국일</span><input type="date" id="im_end" value="${I.end||''}"></label>
+          <label class="f"><span>출장자(쉼표로)</span><input type="text" id="im_trav" value="${esc(I.travelers||'')}"></label>
+          <label class="f"><span>장소</span><input type="text" id="im_place" value="${esc(I.place||'')}"></label>
+          ${I.kind==='travel'?`<label class="f"><span>결제 방식</span><select id="im_pay"><option value="corp" ${I.pay==='corp'?'selected':''}>법인카드</option><option value="personal" ${I.pay==='personal'?'selected':''}>개인카드</option></select></label>
+          <label class="f"><span>승인 때 환율(1USD)</span><input type="text" id="im_rate" value="${esc(I.rate||'')}"></label>`:''}
+        </div>
+        ${I.kind==='travel'?`
+        <b style="font-size:13px">승인액 (문서 금액 그대로)</b>
+        <div class="grid">${G.map(([k,n])=>`<label class="f"><span>${n}</span><input type="text" data-imb="${k}" value="${I.budget[k]!=null?won(I.budget[k]):''}"></label>`).join('')}</div>
+        <b style="font-size:13px">추가예산 승인 (있으면)</b>
+        <div class="grid">${G.map(([k,n])=>`<label class="f"><span>${n}</span><input type="text" data-ime="${k}" value="${I.extra[k]?won(I.extra[k]):''}"></label>`).join('')}</div>
+        <b style="font-size:13px">1차 결의에서 이미 지급한 금액 (있으면)</b>
+        <div class="grid">${G.map(([k,n])=>`<label class="f"><span>${n}</span><input type="text" data-imp="${k}" value="${I.prior[k]?won(I.prior[k]):''}"></label>`).join('')}</div>`
+        : `<b style="font-size:13px">승인 항목</b><textarea id="im_fee" placeholder="항목명: 금액 (줄마다)">${esc((I.feeRows||[]).map(r=>`${r.label}: ${won(r.amt)}`).join('\n'))}</textarea>`}
+        <div class="row"><button class="btn pri big" id="imGo">결의 만들기</button><span class="note" id="imGoMsg"></span></div>
+      </div>
+    </div>`;
+  bindImport(I);
+}
+function bindImport(I){
+  const re = () => { collectImport(I); renderImport($('#main')); };
+  const add = async list => { for (const f of list) { const rec = {id: uid(), name: f.name, type: f.type||'application/pdf',
+      role: /추가예산/.test(f.name) ? '추가예산 승인' : /1차|\[1차\]/.test(f.name) && /결과/.test(f.name) ? '1차 결과보고서' : /1차|지급서류/.test(f.name) ? '1차 지급서류' : /승인|운영계획/.test(f.name) ? '승인 운영계획서·승인공문' : '기타'};
+    blobCache.set(rec.id, f); try { Object.assign(rec, await Files.put(f, rec.id)); } catch {} I.files.push(rec); } re(); };
+  const d = $('#imDrop'), fi = $('#imFi');
+  d.onclick = () => fi.click(); d.ondragover = e => { e.preventDefault(); d.classList.add('over'); }; d.ondragleave = () => d.classList.remove('over');
+  d.ondrop = e => { e.preventDefault(); add([...e.dataTransfer.files]); }; fi.onchange = () => add([...fi.files]);
+  document.querySelectorAll('[data-imr]').forEach(el => el.onchange = () => { I.files[el.dataset.imr].role = el.value; });
+  document.querySelectorAll('[data-imdel]').forEach(b => b.onclick = () => { I.files.splice(+b.dataset.imdel, 1); re(); });
+  ['im_code','im_kind','im_b'].forEach(id => { const el = document.getElementById(id); if (el) el.onchange = re; });
+  $('#imRead').onclick = async () => { collectImport(I); $('#imMsg').innerHTML = '<span class="spin"></span> 읽는 중'; await readImport(I); renderImport($('#main')); };
+  $('#imGo').onclick = async () => { collectImport(I); const err = await createFromImport(I); if (err) $('#imGoMsg').innerHTML = `<span class="err">${esc(err)}</span>`; };
+}
+function collectImport(I){
+  const v = id => document.getElementById(id);
+  [['im_title','title'],['im_code','code'],['im_b','b'],['im_kind','kind'],['im_start','start'],['im_end','end'],['im_trav','travelers'],['im_place','place'],['im_pay','pay'],['im_rate','rate']].forEach(([id,k]) => { if (v(id)) I[k] = v(id).value.trim(); });
+  document.querySelectorAll('[data-imb]').forEach(el => I.budget[el.dataset.imb] = el.value ? num(el.value) : undefined);
+  document.querySelectorAll('[data-ime]').forEach(el => I.extra[el.dataset.ime] = num(el.value));
+  document.querySelectorAll('[data-imp]').forEach(el => I.prior[el.dataset.imp] = num(el.value));
+  if (v('im_fee')) I.feeRows = v('im_fee').value.split('\n').map(l => { const m = l.match(/^(.*?)[:：]\s*([\d,]+)/); return m ? {label: m[1].trim(), amt: num(m[2])} : null; }).filter(Boolean);
+  const f = I.code && BUDGET.find(r => r.nc === I.code || r.oc === I.code); if (f && !I._bset) { I.b = f.b; I._bset = true; }
+}
+async function readImport(I){
+  const notes = [];
+  for (const f of I.files) {
+    const lines = await pdfLines(await fileBlob(f), 4);
+    if (lines.length < 5) { notes.push(`${f.name}: 글자를 읽을 수 없는 스캔본`); continue; }
+    const head = lines.slice(0, 6).join(' ');   // 파일 이름이 달라도 내용으로 종류를 판별
+    if (/결과보고서/.test(head) && /\[\s*1\s*차\s*\]|1차/.test(head)) f.role = '1차 결과보고서';
+    else if (/추가예산/.test(head)) f.role = '추가예산 승인';
+    else if (/운영계획서/.test(head) && f.role === '기타') f.role = '승인 운영계획서·승인공문';
+    if (f.role === '승인 운영계획서·승인공문' || f.role === '추가예산 승인') {
+      const a = parseApproval(lines);
+      if (f.role === '승인 운영계획서·승인공문' || !I.title) {
+        Object.assign(I, {title: a.title || I.title, code: a.codes[0] || I.code, b: a.fund, start: a.start || I.start, end: a.end || I.end, place: a.place || I.place,
+          travelers: (a.travelers||[]).join(', ') || I.travelers, rate: a.rate || I.rate, pay: a.pay, excludeDays: a.excludeDays || I.excludeDays,
+          goals: a.goals, items: a.items, effects: a.effects}); I._bset = true;
+        if (a.feeRows.length && !Object.keys(a.budget).length) { I.kind = 'fee'; I.feeRows = a.feeRows; }
+      }
+      if (a.isExtra) { Object.assign(I.budget, a.budget); Object.assign(I.extra, a.extra); notes.push('추가예산 반영'); }
+      else for (const [k, val] of Object.entries(a.budget)) if (I.budget[k] == null || !I.files.some(x => x.role === '추가예산 승인')) I.budget[k] = val;
+    }
+    if (f.role === '1차 결과보고서') { Object.assign(I.prior, parseCard1(lines)); notes.push('1차 지급액 반영'); }
+  }
+  // 추가예산 공문의 금액은 합계(C)이므로 승인액(A) = C - B
+  if (I.files.some(x => x.role === '추가예산 승인')) for (const k of Object.keys(I.extra)) if (I.extra[k] && I.budget[k] != null && I.budget[k] >= I.extra[k] && !I._split) I.budget[k] -= I.extra[k];
+  I._split = true;
+  I.msg = `읽었습니다. ${notes.join(' · ')} 금액을 문서와 대조해 주세요.`;
+}
+async function createFromImport(I){
+  const names = (I.travelers||'').split(/[,，]/).map(s => koName(s)).filter(Boolean);
+  if (!I.start || !I.end) return '출국일·귀국일을 넣어 주세요.';
+  if (!names.length) return '출장자를 넣어 주세요.';
+  const found = I.code && BUDGET.find(r => r.nc === I.code || r.oc === I.code);
+  const budget = found ? {...found} : {b: I.b, nc: I.code||'', oc: '', pg: I.title||'', st: '', ex: ''};
+  const t = { id: uid(), name: `${I.start.slice(2,7).replace('-','.')} ${I.place||'출장'} (결의)`, created: Date.now(), imported: true,
+    travelers: names.map(n => ({name: n, rank: I.rank || '일반 교직원', start: '', end: ''})), place: I.place||'', start: I.start, end: I.end, memo: '',
+    kinds: {travel: I.kind==='travel', fee: I.kind==='fee'}, budget: {}, pay: I.pay||'corp', rate: num(I.rate)||1500, excludeDays: I.excludeDays||0,
+    feeRows: I.kind==='fee' ? (I.feeRows||[]) : [], files: I.files.map(f => ({...f, role: '기타 첨부'})), approvals: [] };
+  const ap = { id: uid(), kind: I.kind, pay: I.kind==='travel' ? t.pay : undefined, budget, imported: true,
+    fixed: I.kind==='travel' ? {운임비: num(I.budget.운임비), 숙박비: num(I.budget.숙박비), 식비: num(I.budget.식비), 일비: num(I.budget.일비)} : null,
+    extra: I.kind==='travel' ? {...I.extra} : {},
+    doc: {title: I.title||'', dept: '입학본부', place: I.place||'', goals: I.goals||[], items: (I.items||[]).map((x,i)=>({date: datesBetween(I.start, I.end)[Math.min(i, dayCount(I.start,I.end)-1)], text: x})), effects: I.effects||[]},
+    approvalDoc: I.files.find(f => f.role==='승인 운영계획서·승인공문') || null, importFiles: I.files };
+  t.approvals.push(ap); ensureResolutions(ap);
+  const p1 = I.prior, hasPrior = I.kind==='travel' && GROUPS.some(g => num(p1[g]));
+  if (hasPrior) {   // 1차 결의는 이미 끝난 것으로 기록(금액만), 최종 결의로 바로 간다
+    if (!ap.resolutions.some(r => r.kind==='card1')) ap.resolutions.unshift({id: uid(), kind: 'card1', name: '법카 1차 결의', receipts: [], photos: [], docs: {}, rates: {}, rateDate: ''});
+    const c1 = ap.resolutions.find(r => r.kind==='card1');
+    Object.assign(c1, {external: true, name: '법카 1차 결의(기존 완료)', settledBy: {운임비: num(p1.운임비), 숙박비: num(p1.숙박비), 식비: num(p1.식비), 일비: num(p1.일비)}, mergedAt: Date.now()});
+    c1.settledTotal = GROUPS.reduce((s,g)=>s+c1.settledBy[g],0);
+  }
+  await saveTrip(t); S.imp = null;
+  const target = ap.resolutions.find(r => !r.external) || ap.resolutions[0];
+  S.trips = S.trips.some(x => x.id===t.id) ? S.trips : [t, ...S.trips];
+  openRes(t.id, ap.id, target.id);
+}
+/* 불러온 승인: 운영계획서 대신 요약 */
+function renderImportedAp(m, t, ap){
+  const A = approvedBy(t, ap), G = [['운임비','항공'],['숙박비','숙박'],['식비','식비'],['일비','일비']];
+  m.innerHTML = `
+    <h1>${esc(t.name)}</h1>
+    <p class="sub">기존에 승인된 건을 불러왔습니다. 승인액은 문서 금액 그대로 고정되어 있습니다.</p>
+    <div class="card stack">
+      <h2>${esc(ap.doc?.title||'')}</h2>
+      <div class="note">${apLabel(ap)} · ${esc(ap.budget.b)} ${esc(ap.budget.nc||'')} · ${ap.kind==='travel'?(ap.pay==='corp'?'법인카드':'개인카드'):'계좌이체'} · ${fmtShort(t.start)} ~ ${fmtShort(t.end)} · ${esc(t.travelers.map(p=>koName(p.name)).join(', '))}</div>
+      ${ap.kind==='travel'?`<table class="rtab sum"><thead><tr><th>항목</th><th>승인액</th><th>추가예산</th><th>합계</th></tr></thead><tbody>
+        ${G.map(([k,n])=>`<tr><td>${n}</td><td><input type="text" data-fix="${k}" value="${won(ap.fixed?.[k]||0)}" style="width:9em"></td><td><input type="text" data-extra="${k}" value="${won(ap.extra?.[k]||0)}" style="width:9em"></td><td class="mono">${won(A[k])}</td></tr>`).join('')}
+        <tr><th>합계</th><th></th><th></th><th class="mono">${won(GROUPS.reduce((s,g)=>s+A[g],0))}</th></tr></tbody></table>`
+        : `<p class="note">승인 항목: ${(t.feeRows||[]).map(r=>`${esc(r.label)} ${won(r.amt)}원`).join(', ')}</p>`}
+      <div class="order">${(ap.importFiles||[]).map(f=>`<div class="it"><span class="nm">${esc(f.role)} · ${esc(f.name)}</span></div>`).join('')}</div>
+      <div class="row"><button class="btn pri" id="goRes">결의 작성하기</button><button class="btn" data-del="trip">삭제</button></div>
+    </div><div id="delBar"></div>`;
+  document.querySelectorAll('[data-fix]').forEach(el => el.onchange = async () => { ap.fixed[el.dataset.fix] = num(el.value); await saveTrip(t); render(); });
+  document.querySelectorAll('[data-extra]').forEach(el => el.onchange = async () => { ap.extra = ap.extra || {}; ap.extra[el.dataset.extra] = num(el.value); await saveTrip(t); render(); });
+  $('#goRes').onclick = () => { ensureResolutions(ap); openRes(t.id, ap.id, (ap.resolutions.find(r=>!r.external)||ap.resolutions[0]).id); };
+  document.querySelectorAll('[data-del]').forEach(b => b.onclick = () => askDelete('trip', t, ap));
 }
 
 
