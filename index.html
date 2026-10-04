@@ -112,6 +112,14 @@ textarea{min-height:70px;resize:vertical}
 .order .it{display:flex;gap:6px;align-items:center;font-size:12.5px;border:1px solid var(--line);border-radius:6px;padding:5px 7px}
 .order .it .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .order .it button{border:0;background:transparent;cursor:pointer;color:var(--muted);padding:0 4px}
+.rtab{width:100%;border-collapse:collapse;font-size:13px}
+.rtab th,.rtab td{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;white-space:nowrap}
+.rtab th{font-weight:600;color:var(--muted);font-size:12px}
+.rtab input,.rtab select{padding:4px 6px;font-size:13px}
+.rtab tr.unsure-row td{background:var(--warn-soft)}
+.rtab tr.skip-row td{opacity:.45}
+.rtab.sum td,.rtab.sum th{text-align:right}.rtab.sum td:first-child,.rtab.sum th:first-child{text-align:left}
+.rtab .over{color:var(--seal);font-weight:600}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 20px);transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:13px;z-index:9}
 </style>
 
@@ -426,12 +434,13 @@ function renderTree(){
       </button>
       ${(t.approvals||[]).length ? `<ul>${t.approvals.map(ap => `
         <li><a href="#" data-ap="${t.id}:${ap.id}">${apLabel(ap)}</a> <span class="chip">${esc(ap.budget?.b||'')} ${esc(ap.budget?.nc||'')}</span> ${apStatus(ap)}
-          <ul>${resolutionsFor(ap).map(r => `<li>└ ${r.n} ${r.hold?'<span class="pill warn">구성 보류</span>':'<span class="pill">다음 단계</span>'}</li>`).join('')}</ul>
+          <ul>${(ap.resolutions?.length ? ap.resolutions.map(r=>({n:r.name, id:r.id, st:resStatus(r)})) : resolutionsFor(ap).map(r=>({n:r.n, id:'', st:r.hold?'<span class="pill warn">구성 보류</span>':'<span class="pill">작성 전</span>'}))).map(r => `<li>└ <a href="#" data-resopen="${t.id}:${ap.id}:${r.id}">${r.n}</a> ${r.st}</li>`).join('')}</ul>
         </li>`).join('')}</ul>` : ''}
     </div>`).join('');
 }
 document.addEventListener('click', e => {
   const tb = e.target.closest('[data-trip]'); if (tb){ openTrip(tb.dataset.trip); return; }
+  const ro = e.target.closest('[data-resopen]'); if (ro){ e.preventDefault(); const [t,a,r]=ro.dataset.resopen.split(':'); openRes(t,a,r||null); return; }
   const ab = e.target.closest('[data-ap]'); if (ab){ e.preventDefault(); const [t,a]=ab.dataset.ap.split(':'); openTrip(t); openAp(a); }
 });
 $('#newTrip').onclick = () => {
@@ -495,6 +504,7 @@ function render(){
   if (S.view==='input' && S.cur) return renderInput(m);
   if (S.view==='review' && S.cur) return renderReview(m);
   if (S.view==='settings') return renderSettings(m);
+  if (S.view==='res' && S.cur) return renderRes(m);
   m.innerHTML = `
     <h1>출장 서류 자동 작성</h1>
     <p class="sub">출장자·일정·예산만 넣으면 운영계획서 초안과 승인증빙일체 PDF가 만들어집니다.</p>
@@ -652,7 +662,7 @@ function bindInput(){
   const t=S.cur, re=()=>{collect(); renderInput($('#main'));};
   $('#f').onsubmit = e => { e.preventDefault(); collect(); generate(); };
   const rt=$('#rate'); if (rt) rt.oninput=()=>{ rt.dataset.touched='1'; };
-  const rd=$('#rateToday'); if (rd) rd.onchange=()=>{ collect(); renderInput($('#main')); };
+  const rd=$('#rateToday'); if (rd) rd.oninput=()=>{ const r=$('#rate'); if (r && r.dataset.touched!=='1' && !t.rateManual) r.value=planRate(num(rd.value)); };   // 화면을 다시 그리지 않는다(바로 누른 버튼이 사라지지 않게)
   const fr=$('#fetchRate'); if (fr) fr.onclick=async e=>{ e.preventDefault(); collect();
     try{ const j=await (await fetch('https://open.er-api.com/v6/latest/USD')).json(); const v=j?.rates?.KRW; if(!v) throw new Error('값 없음');
       t.rateToday=String(Math.round(v*100)/100); t.rateSource=`ExchangeRate-API ${j.time_last_update_utc||''}`; renderInput($('#main')); toast('오늘 환율을 불러왔습니다. 구글 값과 다르면 고쳐 주세요.'); }
@@ -957,6 +967,13 @@ function renderReview(m){
         ${!ap.ai?`<div class="flag">AI 작성을 쓰지 못해 기본 문구로 채웠습니다.${ap.aiErr?' ('+esc(ap.aiErr)+')':''} 문장을 직접 다듬거나 아래에서 다시 작성하세요.</div>`:''}
         ${(ap.doc.unsure||[]).length||miss.length?`<div class="flag"><b>확인 필요</b><ul>${miss.map(x=>`<li>${esc(x)} 없음</li>`).join('')}${(ap.doc.unsure||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'<div class="okbox">빠진 정보가 없습니다.</div>'}
         <div class="card stack">
+          <h2>교내 승인 후 결의</h2>
+          <p class="note">교내 시스템에서 받은 승인공문을 올리면 이 승인 아래 결의(${resolutionsFor(ap).map(r=>r.n).join(', ')})로 이어갑니다.</p>
+          ${ap.approvalDoc?`<div class="okbox">승인공문: ${esc(ap.approvalDoc.name)}</div>`:''}
+          <label class="btn" style="text-align:center">승인공문 올리기<input type="file" id="apDoc" accept=".pdf,image/*" hidden></label>
+          <button class="btn pri" id="goRes">결의 작성하기</button>
+        </div>
+        <div class="card stack">
           <h2>짧게 고치기</h2>
           <textarea id="instr" placeholder="예: 10.5는 유학원 방문 예정 / 목표를 더 짧게 / 기대효과에 MOU 내용 추가"></textarea>
           <div class="row"><button class="btn pri" id="doInstr">반영</button><button class="btn" id="redraft">처음부터 다시 쓰기</button></div>
@@ -996,6 +1013,9 @@ function bindReview(t, ap){
     };
     el.onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); el.blur(); } };
   });
+  $('#apDoc').onchange=async e=>{ const f=e.target.files[0]; if(!f) return; const rec={id:uid(), name:f.name, type:f.type||'application/pdf'}; blobCache.set(rec.id,f);
+    try{ Object.assign(rec, await Files.put(f, rec.id)); }catch{} ap.approvalDoc=rec; ensureResolutions(ap); await saveTrip(t); render(); renderTree(); toast('승인공문을 연결했습니다'); };
+  $('#goRes').onclick=async()=>{ ensureResolutions(ap); await saveTrip(t); openRes(t.id, ap.id, null); };
   $('#doInstr').onclick=async()=>{
     const ins=$('#instr').value.trim(); if(!ins) return;
     $('#instrMsg').innerHTML='<span class="spin"></span> 반영 중';
@@ -1178,6 +1198,501 @@ async function mergePdf(t, ap){
     msg.textContent=`${out.getPageCount()}쪽 PDF를 저장했습니다.${dropped?` 영문 페이지 ${dropped}쪽은 뺐습니다.`:''}`;
   }catch(e){ msg.innerHTML=`<span class="err">${e.code==='declined'?'저장을 취소했습니다.':'PDF를 만들지 못했습니다: '+esc(e.message)}</span>`; }
 }
+
+/* ================= 결의 (승인 아래에 붙는 지급 서류) =================
+   근거: docs/참고자료_분석_결의구조_2026-10-04.md
+   최종 출장 결의 = 결과보고서 + 지급 증빙일체(출장복명서 → 출장 증빙 사진 → 출장 경비 정리 → 환율 정보 → 영수증 첨부철 스캔)
+   영수증 원본 제출 의무가 있으므로 '영수증 첨부철'은 붙이기 전 상태로 따로 출력한다. */
+
+const RCAT = ['항공','숙박비','식비','일비','교통비','통신비','보험','비자','기타'];
+const GROUP_OF = c => c==='항공' ? '운임비' : c==='숙박비' ? '숙박비' : c==='식비' ? '식비' : '일비';   // 정산표 구분(실제 사례: 교통비·비자는 일비 칸 + 비고)
+const GROUPS = ['운임비','숙박비','식비','일비'];
+const addDays = (s, n) => { const d=d0(s); d.setDate(d.getDate()+n); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const dotDate = s => { const d=d0(s); return `${d.getFullYear()}. ${d.getMonth()+1}. ${d.getDate()}.`; };
+const PEOPLE_KEY = 'seojeong-people';   // 출장자 소속·계좌(이 브라우저에서 다시 쓰기 위한 편의 저장)
+const people = (() => { try { return JSON.parse(localStorage.getItem(PEOPLE_KEY)||'{}'); } catch { return {}; } })();
+const savePeople = () => { try { localStorage.setItem(PEOPLE_KEY, JSON.stringify(people)); } catch {} };
+
+function ensureResolutions(ap){
+  if (ap.resolutions?.length) return ap.resolutions;
+  ap.resolutions = resolutionsFor(ap).map(r => ({ id: uid(), kind: r.k, name: r.n, hold: !!r.hold, receipts: [], photos: [], docs: {}, rates: {}, rateDate: '' }));
+  return ap.resolutions;
+}
+function resStatus(rs){
+  if (rs.mergedAt) return '<span class="pill ok">지급 증빙일체 완료</span>';
+  if (rs.report) return '<span class="pill warn">작성 중</span>';
+  if (rs.receipts.length) return '<span class="pill acc">정산 중</span>';
+  return rs.hold ? '<span class="pill warn">구성 보류</span>' : '<span class="pill">작성 전</span>';
+}
+function openRes(tripId, apId, resId){
+  openTrip(tripId);
+  const ap = S.cur.approvals.find(a => a.id===apId); if (!ap) return;
+  ensureResolutions(ap);
+  S.apId = apId; S.resId = resId || ap.resolutions[0].id; S.view = 'res'; S.resTab = S.resTab || 'settle';
+  render(); renderTree();
+}
+const curRes = () => { const ap = S.cur?.approvals.find(a => a.id===S.apId); return { ap, rs: ap?.resolutions?.find(r => r.id===S.resId) }; };
+
+/* ---------- 금액 ---------- */
+function rateFor(rs, cur){ return cur==='KRW' ? 1 : num(rs.rates[cur]?.rate); }
+function krwOf(rs, x){
+  if (x.krw) return Math.round(num(x.krw));                         // 카드 청구 원화가 있으면 그것을 우선
+  if ((x.cur||'KRW')==='KRW') return Math.round(num(x.amt));
+  const r = rateFor(rs, x.cur); return r ? Math.round(num(x.amt) * r) : 0;
+}
+function limitsFor(t, ap, rs){
+  const lim = {운임비:0, 숙박비:0, 식비:0, 일비:0};
+  if (ap.kind==='fee') return lim;
+  travelBudget(t).rows.forEach(r => { const g = r.cat==='항공운임비' ? '운임비' : r.cat; if (lim[g]!==undefined) lim[g] += r.amt; });
+  if (rs.kind==='card1') { lim.식비 = 0; lim.일비 = 0; }            // 1차(법카)는 항공·숙박만
+  return lim;
+}
+function settle(t, ap, rs){
+  const rows = rs.receipts.filter(x => !x.skip).map(x => ({...x, group: GROUP_OF(x.cat), won: krwOf(rs, x)}));
+  const lim = limitsFor(t, ap, rs), by = {};
+  GROUPS.forEach(g => { const items = rows.filter(r => r.group===g).sort((a,b)=>(a.date||'').localeCompare(b.date||'')); by[g] = {items, sum: items.reduce((s,r)=>s+r.won,0), limit: lim[g]}; });
+  const total = GROUPS.reduce((s,g)=>s+by[g].sum,0), limitTotal = GROUPS.reduce((s,g)=>s+by[g].limit,0);
+  const missingRate = [...new Set(rows.filter(r => (r.cur||'KRW')!=='KRW' && !r.krw && !rateFor(rs, r.cur)).map(r => r.cur))];
+  return {by, total, limitTotal, missingRate, rows};
+}
+function priorPaid(ap, rs){   // 같은 승인의 앞선 결의에서 이미 지급한 금액(1차 → 최종)
+  let sum = 0;
+  for (const o of ap.resolutions) { if (o.id===rs.id) break; if (o.settledTotal) sum += o.settledTotal; }
+  return sum;
+}
+
+/* ---------- 영수증 읽기 ---------- */
+async function pdfPageImage(blob, page=1){
+  const doc = await pdfjsLib.getDocument({data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported:false}).promise;
+  const pg = await doc.getPage(page), vp = pg.getViewport({scale: 1.6}), c = document.createElement('canvas');
+  c.width = vp.width; c.height = vp.height; await pg.render({canvasContext: c.getContext('2d'), viewport: vp}).promise;
+  return new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+}
+async function readReceipt(t, rs, x){
+  const f = {id: x.fileId, name: x.name, type: x.type, url: x.url, asset: x.asset, local: x.local};
+  const blob = await fileBlob(f);
+  let text = '', images = [];
+  if (/pdf/.test(x.type) || /\.pdf$/i.test(x.name)) {
+    text = await pdfText(f, 2);
+    if ((text.match(/\S/g)||[]).length < 40) images = [await pdfPageImage(blob)];   // 스캔 PDF
+  } else images = [blob];
+  const names = t.travelers.map(p => koName(p.name)).filter(Boolean);
+  const lim = await AI.limits();
+  const res = await AI.json(`해외출장 영수증입니다. 확인되는 값만 JSON으로 답하세요.
+{"date":"YYYY-MM-DD","vendor":"가게·회사 이름(짧게)","cur":"통화코드(KRW, USD, LKR 등)","amt":결제 금액 숫자,"krw":카드 원화 청구액이 따로 찍혀 있으면 숫자 아니면 null,"cat":"${RCAT.join('|')} 중 하나","a4":A4 크기 출력물(호텔·항공 결제 영수증, 인보이스)이면 true 손바닥 크기 영수증이면 false,"unsure":"애매한 점(없으면 빈 문자열)"}
+출장 기간 ${t.start}~${t.end}, 출장자 ${names.join(', ')}. 음식점·카페는 식비, 택시·버스·지하철은 교통비.
+${text ? '추출된 글자:\n' + text.slice(0, 6000) : '(이미지 참고)'}`, images.length && lim.images ? {images} : {}, 'quick');
+  Object.assign(x, {
+    date: res.date || x.date || '', vendor: res.vendor || x.vendor || '', cur: (res.cur || 'KRW').toUpperCase(),
+    amt: num(res.amt), krw: res.krw ? num(res.krw) : '', cat: RCAT.includes(res.cat) ? res.cat : '기타',
+    a4: res.a4 ?? (/pdf/.test(x.type)), unsure: res.unsure || '', read: true
+  });
+}
+async function addReceiptFiles(t, ap, rs, list){
+  const msg = $('#rcMsg'); msg.innerHTML = '<span class="spin"></span> 영수증을 저장하는 중';
+  const added = [];
+  for (const file of list) {
+    const x = {id: uid(), fileId: uid(), name: file.name, type: file.type || 'application/pdf', payer: koName(t.travelers[0]?.name), cat: '기타', cur: 'KRW', amt: 0};
+    blobCache.set(x.fileId, file);
+    try { Object.assign(x, await Files.put(file, x.fileId)); } catch {}
+    rs.receipts.push(x); added.push(x);
+  }
+  await saveTrip(t); renderRes($('#main'));
+  let i = 0;
+  for (const x of added) {
+    i++; const m = $('#rcMsg'); if (m) m.innerHTML = `<span class="spin"></span> 영수증 읽는 중 (${i}/${added.length})`;
+    try { await readReceipt(t, rs, x); } catch (e) { x.unsure = e.code==='no_sample' ? 'AI 연결 없음 · 직접 입력' : '읽지 못함 · 직접 입력'; }
+    await saveTrip(t); renderRes($('#main'));
+  }
+  const m = $('#rcMsg'); if (m) m.textContent = `${added.length}장을 정리했습니다. 노란 줄만 확인하세요.`;
+}
+function seedFromApproval(t, ap, rs){   // 개인카드로 미리 낸 항공·숙박은 승인 때 올린 결제 영수증을 그대로 쓴다
+  if (rs.seeded || rs.kind!=='final' || ap.pay!=='personal') return;
+  const pick = role => t.files.filter(f => f.role===role);
+  const make = (cat, amt, role, label) => {
+    const fs = pick(role);
+    rs.receipts.push({id: uid(), fileId: fs[0]?.id, files: fs.map(f=>f.id), name: fs.map(f=>f.name).join(', ') || label, type: fs[0]?.type || 'application/pdf',
+      url: fs[0]?.url, asset: fs[0]?.asset, local: fs[0]?.local, date: t.start, vendor: label, cur: 'KRW', amt, cat, a4: true, payer: koName(t.travelers[0]?.name), read: true, fromApproval: true});
+  };
+  if (t.flight) make('항공', t.flight, '항공 결제 영수증', '항공권');
+  if (t.hotel) make('숙박비', t.hotel, '숙박 결제 영수증', '숙박비');
+  rs.seeded = true;
+}
+
+/* ---------- 화면 ---------- */
+function renderRes(m){
+  const t = S.cur, {ap, rs} = curRes();
+  if (!ap || !rs) { S.view='review'; return render(); }
+  seedFromApproval(t, ap, rs);
+  if (!rs.rateDate) rs.rateDate = addDays(t.end, 1);   // 출장복명일(귀국 다음 날) 기준 환율
+  t.travelers.forEach(p => { const k = koName(p.name), pp = people[k]; if (pp) { p.dept = p.dept || pp.dept; p.bank = p.bank || pp.bank; p.acct = p.acct || pp.acct; } });
+  const tabs = [['settle','1 정산·지급액'],['report','2 결과보고서'],['done','3 증빙·완성']];
+  const sibs = ap.resolutions.map(r => `<button type="button" data-res="${r.id}" class="${r.id===rs.id?'on':''}">${esc(r.name)}</button>`).join('');
+  m.innerHTML = `
+    <div class="card" style="margin-bottom:14px;padding:12px 16px">
+      <div class="row" style="justify-content:space-between">
+        <div><span class="chip">상위 승인</span> <b>${esc(docTitle(ap))}</b><br>
+          <span class="note">${apLabel(ap)} · ${esc(ap.budget.b)} ${esc(ap.budget.nc)} · ${ap.kind==='travel'?(ap.pay==='corp'?'법인카드':'개인카드'):'계좌이체'} · 승인공문 ${ap.approvalDoc?'<span class="pill ok">연결됨</span>':'<span class="pill warn">미연결</span>'}</span></div>
+        <button class="btn" id="backAp">승인으로</button>
+      </div>
+    </div>
+    <div class="row" style="justify-content:space-between;margin-bottom:10px">
+      <h1 style="margin:0">${esc(rs.name)}</h1>
+      ${ap.resolutions.length>1?`<div class="seg">${sibs}</div>`:''}
+    </div>
+    ${rs.hold ? '<div class="flag" style="margin-bottom:12px">분담금 결의의 구성(최종 출장 결의 연결 여부)은 아직 확정되지 않았습니다. 결과보고서·승인공문·지급서류 중심으로 작성합니다.</div>' : ''}
+    <div class="seg" style="margin-bottom:16px">${tabs.map(([k,n])=>`<button type="button" data-rtab="${k}" class="${S.resTab===k?'on':''}">${n}</button>`).join('')}</div>
+    <div id="resBody"></div>`;
+  $('#backAp').onclick = () => { S.view='review'; render(); };
+  document.querySelectorAll('[data-res]').forEach(b => b.onclick = () => { S.resId = b.dataset.res; render(); });
+  document.querySelectorAll('[data-rtab]').forEach(b => b.onclick = () => { S.resTab = b.dataset.rtab; render(); });
+  const body = $('#resBody');
+  if (S.resTab==='report') return renderResReport(body, t, ap, rs);
+  if (S.resTab==='done') return renderResDone(body, t, ap, rs);
+  return renderResSettle(body, t, ap, rs);
+}
+
+function renderResSettle(el, t, ap, rs){
+  const st = settle(t, ap, rs), curs = [...new Set(rs.receipts.map(x => x.cur).filter(c => c && c!=='KRW'))];
+  const prior = priorPaid(ap, rs);
+  el.innerHTML = `
+    <div class="stack">
+      <div class="card stack">
+        <h2>출장자 · 지급 계좌 <span class="chip">영수증 첨부철 머리표에 들어갑니다</span></h2>
+        ${t.travelers.map((p,i)=>`<div class="trav" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.3fr)">
+          <label class="f"><span>출장자</span><input type="text" value="${esc(koName(p.name))}" disabled></label>
+          <label class="f"><span>소속</span><input type="text" data-pp="${i}:dept" value="${esc(p.dept||'')}" placeholder="예: 입학본부"></label>
+          <label class="f"><span>은행</span><input type="text" data-pp="${i}:bank" value="${esc(p.bank||'')}" placeholder="예: 신한은행"></label>
+          <label class="f"><span>계좌번호</span><input type="text" data-pp="${i}:acct" value="${esc(p.acct||'')}"></label></div>`).join('')}
+      </div>
+
+      <div class="card stack">
+        <h2>영수증 올리기</h2>
+        <div class="drop" id="rcDrop">영수증 사진이나 PDF를 끌어다 놓거나 눌러서 고르세요. 날짜·금액·통화·구분을 읽어 정산표를 만듭니다.<input type="file" id="rcFi" multiple accept=".pdf,image/*" hidden></div>
+        <span class="note" id="rcMsg">${ap.pay==='personal'&&rs.kind==='final'?'개인카드로 낸 항공·숙박은 승인 때 올린 결제 영수증에서 자동으로 넣었습니다.':''}</span>
+        <div style="overflow-x:auto"><table class="rtab">
+          <thead><tr><th>일자</th><th>구분</th><th>내용</th><th>통화</th><th>금액</th><th>원화 환산</th><th>출장자</th><th title="A4 크기라 첨부철에 '뒷면참조'">큰 영수증</th><th>제외</th><th></th></tr></thead>
+          <tbody>${rs.receipts.map((x,i)=>`<tr class="${x.unsure?'unsure-row':''} ${x.skip?'skip-row':''}">
+            <td><input type="date" data-rc="${i}:date" value="${esc(x.date||'')}"></td>
+            <td><select data-rc="${i}:cat">${RCAT.map(c=>`<option ${x.cat===c?'selected':''}>${c}</option>`).join('')}</select></td>
+            <td><input type="text" data-rc="${i}:vendor" value="${esc(x.vendor||'')}" title="${esc(x.name)}${x.unsure?' · '+esc(x.unsure):''}"></td>
+            <td><input type="text" data-rc="${i}:cur" value="${esc(x.cur||'KRW')}" style="width:4.5em"></td>
+            <td><input type="text" data-rc="${i}:amt" value="${x.amt?Number(x.amt).toLocaleString('ko-KR',{maximumFractionDigits:2}):''}" style="width:7em"></td>
+            <td class="mono">${krwOf(rs,x)?won(krwOf(rs,x)):'<span class="pill warn">환율 필요</span>'}</td>
+            <td><select data-rc="${i}:payer">${t.travelers.map(p=>koName(p.name)).concat(t.travelers.length>1?['공통']:[]).map(n=>`<option ${x.payer===n?'selected':''}>${esc(n)}</option>`).join('')}</select></td>
+            <td style="text-align:center"><input type="checkbox" data-rc="${i}:a4" ${x.a4?'checked':''}></td>
+            <td style="text-align:center"><input type="checkbox" data-rc="${i}:skip" ${x.skip?'checked':''}></td>
+            <td><button class="x" data-rcdel="${i}" aria-label="삭제">×</button></td></tr>`).join('') || '<tr><td colspan="10" class="note" style="text-align:center;padding:18px">아직 영수증이 없습니다.</td></tr>'}</tbody>
+        </table></div>
+      </div>
+
+      <div class="card stack">
+        <h2>환율 <span class="chip">기준일: 출장복명일</span></h2>
+        <div class="grid">
+          <label class="f"><span>기준일</span><input type="date" id="rateDate" value="${rs.rateDate}"></label>
+          ${curs.map(c=>`<label class="f"><span>1${c} = 원 · <a href="https://www.google.com/search?q=${c}+KRW" target="_blank" rel="noopener">구글</a>${MODE==='web'?` · <a href="#" data-fx="${c}">불러오기</a>`:''}</span><input type="text" data-rate="${c}" value="${esc(rs.rates[c]?.rate||'')}" placeholder="예: 1507.50"></label>`).join('') || '<p class="note">외화 영수증이 없으면 환율은 필요 없습니다.</p>'}
+        </div>
+        <div class="row"><label class="btn">환율 화면 캡처 올리기<input type="file" id="rateCap" accept="image/*,.pdf" hidden></label>${rs.docs.rateCap?`<span class="okbox">캡처: ${esc(rs.docs.rateCap.name)}</span>`:'<span class="note">환율정보 페이지에 그대로 붙습니다. 없으면 값만 표로 넣습니다.</span>'}</div>
+      </div>
+
+      <div class="card stack">
+        <h2>정산 요약</h2>
+        ${st.missingRate.length?`<div class="flag">${st.missingRate.join(', ')} 환율을 넣어야 합계가 맞습니다.</div>`:''}
+        <div style="overflow-x:auto"><table class="rtab sum">
+          <thead><tr><th>구분</th><th>건수</th><th>합계(원)</th><th>한도(승인)</th><th>한도 잔액</th></tr></thead>
+          <tbody>${GROUPS.map(g=>{const b=st.by[g]; const over=b.limit&&b.sum>b.limit; return `<tr><td>${g}</td><td>${b.items.length}</td><td class="mono">${won(b.sum)}</td><td class="mono">${won(b.limit)}</td><td class="mono ${over?'over':''}">${won(b.limit-b.sum)}${over?' 초과':''}</td></tr>`;}).join('')}
+          <tr><th>합계</th><th>${st.rows.length}</th><th class="mono">${won(st.total)}</th><th class="mono">${won(st.limitTotal)}</th><th class="mono">${won(st.limitTotal-st.total)}</th></tr></tbody>
+        </table></div>
+        ${prior?`<p class="note">앞선 결의에서 지급한 금액 ${won(prior)}원은 결과보고서 집행예산에 기집행으로 들어갑니다.</p>`:''}
+        <div class="row"><button class="btn" id="dlXlsx">정산표 엑셀 받기</button><span class="note" id="stMsg"></span></div>
+      </div>
+    </div>`;
+  bindResSettle(t, ap, rs);
+}
+function bindResSettle(t, ap, rs){
+  const save = async (rerender=true) => { rs.settledTotal = settle(t, ap, rs).total; await saveTrip(t); if (rerender) renderRes($('#main')); };
+  document.querySelectorAll('[data-pp]').forEach(el => el.onchange = () => { const [i,k]=el.dataset.pp.split(':'); const p=t.travelers[i]; p[k]=el.value.trim();
+    const n=koName(p.name); people[n]={dept:p.dept||'',bank:p.bank||'',acct:p.acct||''}; savePeople(); save(false); });
+  document.querySelectorAll('[data-rc]').forEach(el => el.onchange = () => { const [i,k]=el.dataset.rc.split(':'); const x=rs.receipts[i];
+    x[k] = el.type==='checkbox' ? el.checked : k==='amt' ? num(el.value) : k==='cur' ? el.value.trim().toUpperCase() : el.value;
+    if (k!=='skip' && k!=='a4') x.unsure=''; save(); });
+  document.querySelectorAll('[data-rcdel]').forEach(b => b.onclick = async () => { const x=rs.receipts.splice(+b.dataset.rcdel,1)[0]; if (x && !x.fromApproval) await Files.remove({id:x.fileId, asset:x.asset, local:x.local}); save(); });
+  const drop=$('#rcDrop'), fi=$('#rcFi');
+  drop.onclick=()=>fi.click(); drop.ondragover=e=>{e.preventDefault(); drop.classList.add('over');}; drop.ondragleave=()=>drop.classList.remove('over');
+  drop.ondrop=e=>{e.preventDefault(); drop.classList.remove('over'); addReceiptFiles(t, ap, rs, [...e.dataTransfer.files]);};
+  fi.onchange=()=>addReceiptFiles(t, ap, rs, [...fi.files]);
+  $('#rateDate').onchange = e => { rs.rateDate = e.target.value; save(); };
+  document.querySelectorAll('[data-rate]').forEach(el => el.onchange = () => { const c=el.dataset.rate; rs.rates[c]={...(rs.rates[c]||{}), rate: el.value.replace(/,/g,'').trim()}; save(); });
+  document.querySelectorAll('[data-fx]').forEach(a => a.onclick = async e => { e.preventDefault(); const c=a.dataset.fx;
+    try { const j=await (await fetch('https://open.er-api.com/v6/latest/USD')).json(); const v=j.rates.KRW/j.rates[c]; if(!v) throw 0;
+      rs.rates[c]={rate: String(Math.round(v*100)/100), source:'ExchangeRate-API'}; save(); toast('오늘 환율입니다. 기준일 환율과 다르면 고쳐 주세요.'); }
+    catch { toast('환율을 불러오지 못했습니다. 구글에서 확인해 넣어 주세요.'); } });
+  $('#rateCap').onchange = async e => { const f=e.target.files[0]; if(!f) return; const rec={id:uid(), name:f.name, type:f.type}; blobCache.set(rec.id,f);
+    try { Object.assign(rec, await Files.put(f, rec.id)); } catch {} rs.docs.rateCap=rec; save(); };
+  $('#dlXlsx').onclick = async () => { try { await Out.save(`${fileBase(ap)} 출장비 정산표.xlsx`.replace(/[\\/:*?"<>|]/g,'_'), settleXlsx(t, ap, rs)); } catch(e) { $('#stMsg').textContent='엑셀을 만들지 못했습니다: '+e.message; } };
+}
+
+/* 정산표 엑셀: 기존 '출장비 정산표_국가.xlsx'와 같은 열 */
+const dotW = s => { const d=d0(s); return `${d.getFullYear()}. ${d.getMonth()+1}. ${d.getDate()}.(${WD[d.getDay()]})`; };
+function settleTitle(t){ const n=dayCount(t.start,t.end); return `${dotW(t.start)}~${dotW(t.end)} 출장 경비 정리(${n-1}박 ${n}일)_${t.travelers.length}인 (${t.travelers.map(p=>koName(p.name)).join(',')})`; }
+function settleXlsx(t, ap, rs){
+  if (typeof XLSX==='undefined') throw new Error('엑셀 기능을 불러오지 못했습니다.');
+  const st = settle(t, ap, rs), curs = [...new Set(st.rows.map(r=>r.cur).filter(c=>c&&c!=='KRW'))].slice(0,3);
+  const head = ['연번','구분','내용','일자','1) KRW', ...curs.map((c,i)=>`${i+2}) ${c}`), '환산금액(KRW)','합계금액(KRW)','한도','한도 잔액','비고'];
+  const aoa = [[settleTitle(t)], head]; let n = 0;
+  GROUPS.forEach(g => { const b = st.by[g]; b.items.forEach((r, i) => { n++;
+    aoa.push([n, i===0?g:'', i===0?(g==='운임비'?'항공권':g):'', r.date||'', (r.cur||'KRW')==='KRW'?num(r.amt):'', ...curs.map(c=>r.cur===c?num(r.amt):''), r.won,
+      i===0?b.sum:'', i===0?b.limit:'', i===0?b.limit-b.sum:'', ['교통비','통신비','보험','비자','기타'].includes(r.cat)?r.cat:(r.vendor||'')]); }); });
+  aoa.push(['합계','','','','',...curs.map(()=>''), st.total, st.total, st.limitTotal, st.limitTotal-st.total, '']);
+  aoa.push([]); aoa.push(['화폐','환율','기준일']);
+  curs.forEach(c => aoa.push([c, num(rs.rates[c]?.rate), rs.rateDate]));
+  const ws = XLSX.utils.aoa_to_sheet(aoa), wb = XLSX.utils.book_new();
+  ws['!cols'] = head.map((h,i)=>({wch: i===2||i===head.length-1?16:12}));
+  XLSX.utils.book_append_sheet(wb, ws, '정산표');
+  return new Blob([XLSX.write(wb, {type:'array', bookType:'xlsx'})], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+
+/* ---------- 결과보고서 ---------- */
+function reportPrompt(t, ap, rs, bokText){
+  const d = ap.doc || {};
+  return `서정대학교 입학본부 해외출장 ${rs.kind==='card1'?'1차(법인카드) ':rs.kind==='final'?'최종 ':''}결과보고서의 문장 부분을 작성합니다. 대학 행정 문체(명사형 종결, "~함.")로 쓰세요.
+
+[승인 운영계획서]
+제목: ${docTitle(ap)} / 예산: ${ap.budget.b} ${ap.budget.pg}
+추진목표: ${(d.goals||[]).join(' / ')}
+계획 일정: ${(d.items||[]).map(x=>fmtShort(x.date)+' '+x.text).join(' / ')}
+기대효과: ${(d.effects||[]).join(' / ')}
+[출장복명서·출장자 자료] ${bokText || '(없음)'}
+[담당자 메모: 계획과 달라진 점·실제 성과] ${rs.memo || '(없음)'}
+
+규칙
+- 실제 결과는 출장복명서와 메모에 있는 사실만 확정 표현으로 쓰고, 계획만 있고 확인되지 않은 활동은 unsure에 "M.D 활동 결과 확인 필요"로 적기. 계획 문장을 결과처럼 그대로 옮기지 말 것.
+- ${ap.budget.b==='등록금'?'':'혁신·앵커 예산이므로 신입생 모집·입시홍보 성과로 쓰지 말 것.'}
+- 관광은 넣지 않음. 날짜·장소·참여자는 바꾸지 않음.
+
+JSON만:
+{"purpose":"사업목적 한 문장(□ 없이)","results":["추진결과 5~7개, - 없이, '~함.'으로 끝남"],"schedule":[{"date":"YYYY-MM-DD","lines":["그날 주요 내용 1~2줄"]}],"unsure":["확인 필요 사항"]}`;
+}
+function reportHTML(t, ap, rs, editable){
+  const b = ap.budget, h = HEAD[b.b], R = rs.report, st = settle(t, ap, rs);
+  const approved = apTotals(t, ap).rows.reduce((s,r)=>s+(r.amt||0),0), prior = priorPaid(ap, rs), now = st.total, remain = approved - prior - now;
+  const rate = approved ? Math.round((prior+now)/approved*1000)/10 : 0;
+  const E = (k, txt) => editable ? `<span class="ed" contenteditable="true" data-red="${k}">${esc(txt)}</span>` : esc(txt);
+  const names = t.travelers.map(p=>koName(p.name)).join(', ');
+  const curs = Object.keys(rs.rates).filter(c=>rs.rates[c]?.rate);
+  const title = `${ap.doc?.title || ''} ${rs.kind==='final' && ap.resolutions.length>1 ? '최종 ' : ''}결과보고서`;
+  return `<div class="paper">
+    <h3>${esc(title)}</h3><div class="yr">${h.yr||''}</div>
+    <table><colgroup><col style="width:84px"><col style="width:112px"><col><col style="width:78px"><col style="width:96px"></colgroup>
+      <tr><th>구 분</th><td class="c" colspan="2">${esc(h.fund)}</td><th>운영부서</th><td class="c">${esc(ap.doc?.dept||'입학본부')}</td></tr>
+      <tr><th>프로그램/<br>사업명</th><td colspan="2">${esc(b.pg)}</td><th>코드명</th><td class="c">${esc(b.nc)}</td></tr>
+      <tr><th>사업목적</th><td colspan="4">□ ${E('purpose', R.purpose)}</td></tr>
+      <tr><th rowspan="3">사업운영</th><th>대상</th><td colspan="3">${esc(names)}</td></tr>
+      <tr><th>사업내용</th><td colspan="3">${esc(ap.doc?.title||'')}</td></tr>
+      <tr><td colspan="4" class="blk"><p>□ 추진일정</p><p>${fmtFull(t.start)} ~ ${fmtFull(t.end)} · ${esc(ap.doc?.title||'')}</p></td></tr>
+      <tr><th>추진결과</th><td colspan="4" class="blk">
+        <p>□ 일 정 : ${fmtFull(t.start)} ~ ${fmtFull(t.end)}</p><p>□ 대 상 : ${esc(names)}</p><p>□ 장 소 : ${esc(ap.doc?.place||t.place)}</p>
+        <p>□ 추진결과 :</p>${R.results.map((x,i)=>`<p>- ${E('results.'+i, x)}</p>`).join('')}
+        <p>□ 세부일정 :</p>${R.schedule.map((s,i)=>`<p>${fmtShort(s.date).replace('.(','(')}</p>${s.lines.map((l,j)=>`<p>- ${E(`schedule.${i}.${j}`, l)}</p>`).join('')}`).join('')}
+      </td></tr>
+      <tr><th>비고</th><td colspan="4" class="blk">
+        ${curs.length?`<p>□ 출장복명일 (${dotDate(rs.rateDate)}) 기준 고시 환율로 국외 여비 정산 처리함.</p>${curs.map(c=>`<p>&nbsp;&nbsp;${esc(c)} 환율 ${esc(rs.rates[c].rate)}</p>`).join('')}`:''}
+        <p>□ 세부 내역은 붙임 정산표 참조</p></td></tr>
+    </table>
+    <table style="margin-top:-1px"><colgroup><col style="width:84px"><col style="width:70px"><col><col style="width:86px"><col style="width:80px"><col style="width:80px"><col style="width:80px"><col style="width:52px"></colgroup>
+      <tr><th rowspan="3">집행예산<br>(단위: 원, %)</th><th>항목</th><th>산출내역</th><th>승인액</th><th>기집행액</th><th>금회 사용액</th><th>잔액</th><th>집행률</th></tr>
+      <tr><td class="c">출장비</td><td class="c">정산표 참고</td><td class="r">${won(approved)}</td><td class="r">${won(prior)}</td><td class="r">${won(now)}</td><td class="r">${won(remain)}</td><td class="r">${rate}</td></tr>
+      <tr><th colspan="2">합계</th><td class="r">${won(approved)}</td><td class="r">${won(prior)}</td><td class="r">${won(now)}</td><td class="r">${won(remain)}</td><td class="r">${rate}</td></tr>
+    </table></div>`;
+}
+function renderResReport(el, t, ap, rs){
+  const docs = rs.docs.bok || [];
+  el.innerHTML = `
+    <div class="split">
+      <div class="stack">
+        ${rs.report ? `<div class="paperwrap">${reportHTML(t, ap, rs, true)}</div><p class="note">글자를 눌러 바로 고칠 수 있습니다. 집행예산은 정산 탭의 합계로 계산됩니다.</p>`
+          : `<div class="card empty">출장복명서를 올리고 ‘결과보고서 만들기’를 누르세요. 승인 운영계획서와 정산 내역을 함께 씁니다.</div>`}
+      </div>
+      <div class="side">
+        <div class="card stack">
+          <h2>출장복명서</h2>
+          <p class="note">출장자가 제출한 복명서(스캔·PDF·사진). 결과 작성 근거가 되고, 지급 증빙일체 맨 앞에 들어갑니다.</p>
+          <label class="btn" style="text-align:center">복명서 올리기<input type="file" id="bokFi" accept=".pdf,image/*" multiple hidden></label>
+          ${docs.map((d,i)=>`<div class="order"><div class="it"><span class="nm">${esc(d.name)}</span><button data-bokdel="${i}" aria-label="빼기">×</button></div></div>`).join('')}
+          <label class="f"><span>달라진 점·실제 성과 (짧게)</span><textarea id="resMemo" placeholder="예: 10.5 MOU 체결 완료, 대사관 방문은 일정상 취소">${esc(rs.memo||'')}</textarea></label>
+          <button class="btn pri" id="makeReport">${rs.report?'다시 만들기':'결과보고서 만들기'}</button>
+          <span class="note" id="repMsg"></span>
+        </div>
+        ${rs.report?`<div class="card stack">
+          ${(rs.report.unsure||[]).length?`<div class="flag"><b>확인 필요</b><ul>${rs.report.unsure.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}
+          <button class="btn pri" id="repPdf">결과보고서 PDF 받기</button>
+        </div>`:''}
+      </div>
+    </div>`;
+  $('#bokFi').onchange = async e => { rs.docs.bok = rs.docs.bok || [];
+    for (const f of e.target.files) { const rec={id:uid(), name:f.name, type:f.type||'application/pdf'}; blobCache.set(rec.id,f); try { Object.assign(rec, await Files.put(f, rec.id)); } catch {} rs.docs.bok.push(rec); }
+    await saveTrip(t); renderRes($('#main')); };
+  document.querySelectorAll('[data-bokdel]').forEach(b => b.onclick = async () => { rs.docs.bok.splice(+b.dataset.bokdel,1); await saveTrip(t); renderRes($('#main')); });
+  $('#resMemo').onchange = async e => { rs.memo = e.target.value; await saveTrip(t); };
+  $('#makeReport').onclick = async () => {
+    rs.memo = $('#resMemo').value; $('#repMsg').innerHTML = '<span class="spin"></span> 작성 중 (20~40초)';
+    try {
+      let bokText = '', images = [];
+      for (const d of rs.docs.bok || []) {
+        if (/pdf/.test(d.type)) { const tx = await pdfText(d, 4); if ((tx.match(/\S/g)||[]).length > 60) bokText += tx; else images.push(await pdfPageImage(await fileBlob(d))); }
+        else images.push(await fileBlob(d));
+      }
+      const lim = await AI.limits();
+      const R = await AI.json(reportPrompt(t, ap, rs, bokText.slice(0, 8000)), images.length && lim.images ? {images: images.slice(0, lim.images.maxCount)} : {}, 'complex');
+      const dates = datesBetween(t.start, t.end), sm = new Map((R.schedule||[]).map(s=>[s.date, s.lines||[]]));
+      rs.report = {purpose: R.purpose||'', results: R.results||[], schedule: dates.map(d=>({date:d, lines: sm.get(d)||[]})).filter(s=>s.lines.length), unsure: R.unsure||[]};
+    } catch (e) {
+      if (e.code!=='no_sample') { $('#repMsg').textContent = '만들지 못했습니다: '+e.message; return; }
+      const d = ap.doc || {};   // AI가 없으면 계획을 바탕으로 틀만 만들고 확인 필요로 표시
+      rs.report = {purpose: (d.goals||[])[0]||'', results: (d.effects||[]).map(x=>`${x} (실제 결과로 고쳐 주세요)`),
+        schedule: (d.items||[]).map(x=>({date:x.date, lines:[x.text]})), unsure:['AI 연결이 없어 계획 문장으로 틀만 채웠습니다. 실제 결과로 고쳐 주세요.']};
+    }
+    await saveTrip(t); renderRes($('#main'));
+  };
+  document.querySelectorAll('[data-red]').forEach(el => { el.onblur = async () => {
+    const k = el.dataset.red.split('.'), v = el.textContent.trim();
+    if (k[0]==='purpose') rs.report.purpose = v; else if (k[0]==='results') rs.report.results[+k[1]] = v; else rs.report.schedule[+k[1]].lines[+k[2]] = v;
+    await saveTrip(t); };
+    el.onkeydown = e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); el.blur(); } }; });
+  const rp = $('#repPdf'); if (rp) rp.onclick = async () => {
+    try { const blob = await htmlToPdf(reportHTML(t, ap, rs, false)); await Out.save(`${fileBase(ap)} ${rs.kind==='final'&&ap.resolutions.length>1?'최종 ':''}결과보고서.pdf`.replace(/[\\/:*?"<>|]/g,'_'), blob); }
+    catch (e) { toast('PDF를 만들지 못했습니다: '+e.message); } };
+}
+
+/* ---------- 출력물 페이지 (원본 양식 모양) ---------- */
+const pageBox = inner => `<div class="paper" style="min-height:1000px">${inner}</div>`;
+async function photosPageHTML(rs){
+  const imgs = [];
+  for (const p of rs.photos) { const b = await fileBlob(p); imgs.push(await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); })); }
+  return pageBox(`<p style="font-weight:700;font-size:15px;margin:0 0 6px">출장 증빙_ 사진 또는 명함</p><p style="margin:0 0 10px">❍ 출장 증빙 사진: ${imgs.length}컷</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${imgs.map(s=>`<div style="border:1px solid #999;height:300px;display:flex;align-items:center;justify-content:center;overflow:hidden"><img src="${s}" style="max-width:100%;max-height:100%"></div>`).join('')}</div>`);
+}
+async function ratePageHTML(rs){
+  const curs = Object.keys(rs.rates).filter(c => rs.rates[c]?.rate);
+  let cap = '';
+  if (rs.docs.rateCap) { let b = await fileBlob(rs.docs.rateCap); if (/pdf/.test(rs.docs.rateCap.type)) b = await pdfPageImage(b);
+    cap = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); }); }
+  return pageBox(`<p style="font-weight:700;font-size:15px;margin:0 0 10px">출장 증빙_ 환율 정보 [${dotDate(rs.rateDate)} 기준]</p>
+    <table style="width:auto;margin-bottom:12px">${curs.map(c=>`<tr><th style="padding:6px 14px">${esc(c)}</th><td style="padding:6px 14px">(1${esc(c)}=${Number(rs.rates[c].rate).toLocaleString('ko-KR',{maximumFractionDigits:2})}원)</td></tr>`).join('')}</table>
+    ${cap?`<img src="${cap}" style="max-width:100%;border:1px solid #999">`:''}`);
+}
+function settlePageHTML(t, ap, rs){
+  const st = settle(t, ap, rs); let n = 0;
+  return `<div class="paper" style="font-size:11px;padding:24px">
+    <p style="font-weight:700;font-size:13px;margin:0 0 8px">${esc(settleTitle(t))}</p>
+    <table><tr><th>연번</th><th>구분</th><th>내용</th><th>일자</th><th>통화</th><th>금액</th><th>환산금액(KRW)</th><th>합계금액(KRW)</th><th>한도</th><th>한도 잔액</th><th>비고</th></tr>
+    ${GROUPS.map(g=>{const b=st.by[g]; return b.items.map((r,i)=>{n++; return `<tr><td class="c">${n}</td>${i===0?`<td class="c" rowspan="${b.items.length}">${g}</td><td class="c" rowspan="${b.items.length}">${g==='운임비'?'항공권':g}</td>`:''}<td class="c">${esc(r.date||'')}</td><td class="c">${esc(r.cur||'KRW')}</td><td class="r">${Number(r.amt).toLocaleString('ko-KR',{maximumFractionDigits:2})}</td><td class="r">${won(r.won)}</td>${i===0?`<td class="r" rowspan="${b.items.length}">${won(b.sum)}</td><td class="r" rowspan="${b.items.length}">${won(b.limit)}</td><td class="r" rowspan="${b.items.length}">${won(b.limit-b.sum)}</td>`:''}<td>${esc(['교통비','통신비','보험','비자','기타'].includes(r.cat)?r.cat:'')}</td></tr>`;}).join('');}).join('')}
+    <tr><th colspan="6">합계</th><td class="r">${won(st.total)}</td><td class="r">${won(st.total)}</td><td class="r">${won(st.limitTotal)}</td><td class="r">${won(st.limitTotal-st.total)}</td><td></td></tr></table>
+    ${Object.keys(rs.rates).filter(c=>rs.rates[c]?.rate).map(c=>`<p style="margin:6px 0 0">${esc(c)} 환율 ${esc(rs.rates[c].rate)} (기준일 ${dotDate(rs.rateDate)})</p>`).join('')}</div>`;
+}
+/* 영수증 첨부철: 영수증 한 장당 한 장. 머리표만 채우고, 큰 영수증은 '뒷면참조' (실제 예시: 고등해외출장결의서 영수증 첨부철) */
+function attachSheetsHTML(t, ap, rs){
+  const st = settle(t, ap, rs), pp = n => t.travelers.find(p => koName(p.name)===n) || t.travelers[0] || {};
+  return st.rows.slice().sort((a,b)=>(a.payer||'').localeCompare(b.payer||'')||(a.date||'').localeCompare(b.date||'')).map(r => {
+    const p = r.payer==='공통' ? t.travelers[0] : pp(r.payer);
+    return `<div class="paper" style="min-height:1060px;padding:40px 46px">
+      <table style="font-size:14px"><colgroup><col style="width:90px"><col><col style="width:120px"><col></colgroup>
+        <tr><th colspan="4" style="font-size:20px;padding:10px">영수증 첨부철</th></tr>
+        <tr><th>대 상</th><td>${esc(p.dept||'')} ${esc(koName(p.name))}</td><th>은행/계좌번호</th><td>${esc(p.bank||'')}${p.bank&&p.acct?'/':''}${esc(p.acct||'')}</td></tr>
+        <tr><th>금액(원)</th><td colspan="3">${won(r.won)}원</td></tr>
+        <tr><td colspan="4" style="height:820px;vertical-align:middle;text-align:center;font-size:26px;color:#333">${r.a4?'뒷면참조':''}</td></tr>
+      </table>
+      <p style="font-size:11px;color:#666;margin:6px 0 0">${esc(r.date||'')} · ${esc(r.cat)} · ${esc(r.vendor||'')}</p></div>`;
+  });
+}
+
+/* HTML 조각들을 A4 PDF로 (페이지마다 따로 그린다) */
+async function htmlToPdf(htmlOrPages, opts={}){
+  const pages = [].concat(htmlOrPages), {PDFDocument} = PDFLib, pdf = await PDFDocument.create();
+  const W = opts.landscape ? 841.89 : 595.28, H = opts.landscape ? 595.28 : 841.89, pxW = opts.landscape ? 1123 : 794;
+  for (const html of pages) {
+    const holder = document.createElement('div'); holder.style.cssText = `position:fixed;left:-20000px;top:0;width:${pxW}px;background:#fff`;
+    holder.innerHTML = html; document.body.append(holder);
+    const paper = holder.querySelector('.paper') || holder; paper.style.width = pxW+'px'; paper.style.maxWidth='none'; paper.style.minWidth='0'; paper.style.boxShadow='none'; paper.style.margin='0';
+    try {
+      await document.fonts.ready; await Promise.all([...holder.querySelectorAll('img')].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; })));
+      const canvas = await html2canvas(paper, {scale: 2, backgroundColor: '#ffffff'});
+      const per = Math.floor(canvas.width * H / W);
+      for (let y = 0; y < canvas.height; y += per) {
+        const c = document.createElement('canvas'); c.width = canvas.width; c.height = per; const cx = c.getContext('2d');
+        cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(canvas, 0, y, canvas.width, Math.min(per, canvas.height - y), 0, 0, canvas.width, Math.min(per, canvas.height - y));
+        const img = await pdf.embedJpg(await (await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92))).arrayBuffer());
+        pdf.addPage([W, H]).drawImage(img, {x: 0, y: 0, width: W, height: H});
+        if (canvas.height - y - per < 40) break;   // 남은 여백뿐이면 빈 쪽을 만들지 않는다
+      }
+    } finally { holder.remove(); }
+  }
+  return new Blob([await pdf.save()], {type: 'application/pdf'});
+}
+
+function renderResDone(el, t, ap, rs){
+  const st = settle(t, ap, rs), bok = rs.docs.bok || [];
+  const steps = [
+    ['출장복명서', bok.length ? `${bok.length}개 파일` : '', '결과보고서 탭에서 올립니다'],
+    ['출장 증빙 사진', rs.photos.length ? `${rs.photos.length}컷` : '', '아래에서 사진을 올리세요'],
+    ['출장 경비 정리(정산표)', st.rows.length ? `${st.rows.length}건 · ${won(st.total)}원` : '', '정산 탭에서 영수증을 올리세요'],
+    ['환율 정보', Object.keys(rs.rates).some(c=>rs.rates[c]?.rate) ? dotDate(rs.rateDate)+' 기준' : (st.rows.some(r=>r.cur!=='KRW')?'':'외화 없음 · 생략'), '정산 탭에서 환율을 넣으세요'],
+    ['영수증 첨부철 (붙인 뒤 스캔본)', rs.docs.attachScan ? esc(rs.docs.attachScan.name) : '', '출력 → 영수증 붙이기 → 스캔해서 올리기']
+  ];
+  el.innerHTML = `
+    <div class="split">
+      <div class="card stack">
+        <h2>지급 증빙일체 구성 <span class="chip">이 순서로 합칩니다</span></h2>
+        <div class="order">${steps.map(([n,ok,hint],i)=>`<div class="it"><span class="nm">${i+1}. ${n}</span>${ok?`<span class="pill ok">${ok}</span>`:`<span class="pill warn">${hint}</span>`}</div>`).join('')}</div>
+        <h2 style="margin-top:8px">출장 증빙 사진</h2>
+        <div class="drop" id="phDrop">현장 사진이나 명함 사진을 올리세요 (2·4·8컷 권장)<input type="file" id="phFi" multiple accept="image/*" hidden></div>
+        <div class="row">${rs.photos.map((p,i)=>`<span class="pill">${esc(p.name)} <button class="x" data-phdel="${i}" style="font-size:13px;padding:0 2px" aria-label="빼기">×</button></span>`).join('')}</div>
+      </div>
+      <div class="side">
+        <div class="card stack">
+          <h2>영수증 첨부철 출력</h2>
+          <p class="note">영수증 ${st.rows.length}장 → 첨부철 ${st.rows.length}장. 머리표(대상·계좌·금액)는 채워져 있고, 큰 영수증은 ‘뒷면참조’로 나옵니다. 출력해서 영수증을 붙이세요.</p>
+          ${t.travelers.some(p=>!p.bank||!p.acct)?'<div class="flag">정산 탭에서 출장자 은행·계좌를 넣으면 머리표에 들어갑니다.</div>':''}
+          <button class="btn pri" id="attachPdf" ${st.rows.length?'':'disabled'}>첨부철 출력본 받기 (PDF)</button>
+          <label class="btn" style="text-align:center">붙인 뒤 스캔본 올리기<input type="file" id="attachScan" accept=".pdf" hidden></label>
+        </div>
+        <div class="card stack">
+          <h2>완성</h2>
+          <button class="btn pri" id="mergeRes">지급 증빙일체 PDF 받기</button>
+          <span class="note" id="doneMsg"></span>
+        </div>
+      </div>
+    </div>`;
+  const ph = $('#phDrop'), pf = $('#phFi');
+  const addPh = async list => { for (const f of list) { const rec={id:uid(), name:f.name, type:f.type}; blobCache.set(rec.id,f); try { Object.assign(rec, await Files.put(f, rec.id)); } catch {} rs.photos.push(rec); } await saveTrip(t); renderRes($('#main')); };
+  ph.onclick = () => pf.click(); ph.ondragover = e => { e.preventDefault(); ph.classList.add('over'); }; ph.ondragleave = () => ph.classList.remove('over');
+  ph.ondrop = e => { e.preventDefault(); addPh([...e.dataTransfer.files]); }; pf.onchange = () => addPh([...pf.files]);
+  document.querySelectorAll('[data-phdel]').forEach(b => b.onclick = async () => { const p = rs.photos.splice(+b.dataset.phdel,1)[0]; await Files.remove(p); await saveTrip(t); renderRes($('#main')); });
+  $('#attachPdf').onclick = async () => { const msg=$('#doneMsg'); msg.innerHTML='<span class="spin"></span> 첨부철을 만드는 중';
+    try { await Out.save(`${fileBase(ap)} 영수증 첨부철(출력용).pdf`.replace(/[\\/:*?"<>|]/g,'_'), await htmlToPdf(attachSheetsHTML(t, ap, rs))); msg.textContent='첨부철 출력본을 저장했습니다.'; }
+    catch (e) { msg.textContent='만들지 못했습니다: '+e.message; } };
+  $('#attachScan').onchange = async e => { const f=e.target.files[0]; if(!f) return; const rec={id:uid(), name:f.name, type:'application/pdf'}; blobCache.set(rec.id,f);
+    try { Object.assign(rec, await Files.put(f, rec.id)); } catch {} rs.docs.attachScan = rec; await saveTrip(t); renderRes($('#main')); };
+  $('#mergeRes').onclick = async () => {
+    const msg = $('#doneMsg'); msg.innerHTML = '<span class="spin"></span> 합치는 중';
+    try {
+      const {PDFDocument} = PDFLib, out = await PDFDocument.create();
+      const addPdf = async blob => { const src = await PDFDocument.load(new Uint8Array(await blob.arrayBuffer()), {ignoreEncryption: true}); (await out.copyPages(src, src.getPageIndices())).forEach(p => out.addPage(p)); };
+      const addImg = async blob => { const bytes = new Uint8Array(await blob.arrayBuffer()), img = /png/i.test(blob.type) ? await out.embedPng(bytes) : await out.embedJpg(bytes);
+        const W=595.28,H=841.89,s=Math.min((W-40)/img.width,(H-40)/img.height,1); out.addPage([W,H]).drawImage(img,{x:(W-img.width*s)/2,y:(H-img.height*s)/2,width:img.width*s,height:img.height*s}); };
+      for (const d of bok) { const b = await fileBlob(d); /pdf/.test(d.type) ? await addPdf(b) : await addImg(b); }
+      if (rs.photos.length) await addPdf(await htmlToPdf(await photosPageHTML(rs)));
+      if (st.rows.length) await addPdf(await htmlToPdf(settlePageHTML(t, ap, rs), {landscape: true}));
+      if (Object.keys(rs.rates).some(c => rs.rates[c]?.rate)) await addPdf(await htmlToPdf(await ratePageHTML(rs)));
+      if (rs.docs.attachScan) await addPdf(await fileBlob(rs.docs.attachScan));
+      if (!out.getPageCount()) { msg.textContent = '합칠 자료가 없습니다.'; return; }
+      await Out.save(`${fileBase(ap)} ${rs.kind==='final'&&ap.resolutions.length>1?'최종 ':''}지급 증빙일체.pdf`.replace(/[\\/:*?"<>|]/g,'_'), new Blob([await out.save()], {type:'application/pdf'}));
+      rs.mergedAt = Date.now(); rs.settledTotal = st.total; await saveTrip(t); renderTree();
+      msg.textContent = `${out.getPageCount()}쪽 PDF를 저장했습니다.${rs.docs.attachScan?'':' 영수증 첨부철 스캔본은 아직 없어 빠졌습니다.'}`;
+    } catch (e) { msg.textContent = '만들지 못했습니다: ' + e.message; }
+  };
+}
+
 
 boot();
 </script>
