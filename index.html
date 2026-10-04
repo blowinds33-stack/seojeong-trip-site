@@ -518,6 +518,20 @@ const AI = {   // tier: 'quick'(파일 읽기) · 'complex'(본문 작성)
     if (res.stop_reason==='refusal') throw new Error('AI가 이 요청을 처리하지 않았습니다. 문구를 바꿔 다시 시도해 주세요.');
     return parseJsonText(res.content.filter(b=>b.type==='text').map(b=>b.text).join(''));
   },
+  /* 링크 읽기(웹 버전 전용): Anthropic 서버의 web_fetch로 페이지를 열어 본다. 화면을 스크립트로 그리는 사이트는 요금이 안 보일 수 있다 */
+  async web(prompt){
+    if (MODE!=='web') throw Object.assign(new Error('링크 읽기는 웹 버전에서만 됩니다. 요금 화면 캡처를 올려 주세요.'),{code:'no_web'});
+    const client=await claudeClient(), messages=[{role:'user', content: prompt + '\n\nJSON 객체 하나만 답하세요.'}];
+    const tools=[{type:'web_fetch_20260209', name:'web_fetch', max_uses:4}, {type:'web_search_20260209', name:'web_search', max_uses:2}];
+    let res;
+    for (let i=0;i<4;i++){
+      res=await client.beta.messages.create({model:MODELS.complex(), max_tokens:16000, output_config:{effort:'high'}, tools, messages, betas:['server-side-fallback-2026-07-01'], fallbacks:'default'});
+      if (res.stop_reason!=='pause_turn') break;
+      messages.push({role:'assistant', content:res.content});   // 서버 도구가 길어지면 이어서 진행
+    }
+    if (res.stop_reason==='refusal') throw new Error('AI가 이 요청을 처리하지 않았습니다.');
+    return parseJsonText(res.content.filter(b=>b.type==='text').map(b=>b.text).join(''));
+  },
   async limits(){ if (MODE==='web') return {maxPromptBytes:400000, images:{maxCount:20}}; return sample ? sample.limits().catch(()=>({})) : {}; }
 };
 const Out = {
@@ -744,7 +758,12 @@ function renderInput(m){
         ${t.pay==='personal' ? `
         <label class="f"><span>항공 실결제 합계(원)</span><input type="text" id="flight" value="${t.flight?won(t.flight):''}" placeholder="영수증에서 읽음"></label>
         <label class="f"><span>숙박 실결제 합계(원)</span><input type="text" id="hotel" value="${t.hotel?won(t.hotel):''}" placeholder="영수증에서 읽음"></label>` : `
-        <label class="f"><span>항공 1인 금액(원) · 이코노미 최고 요금</span><input type="text" id="flight" value="${t.flight?won(t.flight):''}" placeholder="예: 1,341,300"></label>`}
+        <label class="f"><span>항공 1인 금액(원) · 이코노미 최고 요금</span><input type="text" id="flight" value="${t.flight?won(t.flight):''}" placeholder="예: 1,341,300"></label>
+        <label class="f"><span>항공권 링크 (요청 항공편)</span><input type="text" id="flightLink" value="${esc(t.flightLink||'')}" placeholder="https://..."></label>
+        <label class="f"><span>숙박 링크</span><input type="text" id="hotelLink" value="${esc(t.hotelLink||'')}" placeholder="https://..."></label>`}
+      </div>
+      ${t.pay==='corp'?`<div class="row"><button type="button" class="btn" id="readLinks" ${MODE==='web'?'':'disabled'}>링크에서 요금 읽기</button><span class="note" id="linkMsg">${MODE==='web'?(t.linkNote?esc(t.linkNote):'이코노미 요금제 중 가장 비싼 1인 요금을 찾습니다. 안 되면 요금 화면 캡처를 자료로 올리세요.'):'링크 읽기는 웹 버전에서 됩니다. 여기서는 요금 화면 캡처를 자료로 올리세요.'}</span></div>`:''}
+      <div>
       </div></div>`:''}
 
       ${t.kinds.fee ? `<div class="card stack"><h2>분담금 항목</h2>
@@ -793,6 +812,8 @@ function collect(){
   if (v('rate')) { const auto=planRate(num(t.rateToday)), val=num(v('rate').value)||auto; t.rateManual = v('rate').dataset.touched==='1' ? val!==auto : !!t.rateManual; t.rate = t.rateManual ? val : auto; }
   if (v('flight')) t.flight=num(v('flight').value);
   if (v('hotel')) t.hotel=num(v('hotel').value);
+  if (v('flightLink')) t.flightLink=v('flightLink').value.trim();
+  if (v('hotelLink')) t.hotelLink=v('hotelLink').value.trim();
   if (v('feeEvent')) t.feeEvent=v('feeEvent').value;
   if (v('feePayee')) t.feePayee=v('feePayee').value;
   document.querySelectorAll('[data-tv]').forEach(el=>{ const [i,k]=el.dataset.tv.split(':'); t.travelers[i][k]= k==='name' ? koName(el.value) : el.value; });
@@ -806,6 +827,25 @@ function bindInput(){
   $('#f').onsubmit = e => { e.preventDefault(); collect(); generate(); };
   const rt=$('#rate'); if (rt) rt.oninput=()=>{ rt.dataset.touched='1'; };
   const rd=$('#rateToday'); if (rd) rd.oninput=()=>{ const r=$('#rate'); if (r && r.dataset.touched!=='1' && !t.rateManual) r.value=planRate(num(rd.value)); };   // 화면을 다시 그리지 않는다(바로 누른 버튼이 사라지지 않게)
+  const rl=$('#readLinks'); if (rl) rl.onclick=async()=>{ collect(); const msg=$('#linkMsg');
+    if (!t.flightLink && !t.hotelLink){ msg.textContent='링크를 넣어 주세요.'; return; }
+    msg.innerHTML='<span class="spin"></span> 링크를 여는 중 (30초~1분)';
+    try{
+      const n=t.travelers.filter(p=>p.name).length||1;
+      const res=await AI.web(`해외출장 법인카드 결제 예정 건의 승인 예산을 잡으려 합니다. 아래 링크를 web_fetch로 직접 열어 보세요.
+항공권 링크: ${t.flightLink||'(없음)'}
+숙박 링크: ${t.hotelLink||'(없음)'}
+출장 ${t.start}~${t.end}, ${t.place}, ${n}명.
+규칙: 항공은 링크의 항공편·노선·날짜 조건 그대로, 이코노미 요금제(라이트·스탠다드·플렉스 등) 중 가장 비싼 1인 요금. 비즈니스·다른 항공편은 제외. 페이지에서 실제로 본 금액만 쓰고, 금액이 안 보이면 null과 이유. 추측 금지.
+{"flight":{"amount":숫자 또는 null,"currency":"KRW|USD 등","fareName":"요금제 이름","perPerson":true,"taxIncluded":true|false|null,"note":"이유·조건"},"hotel":{"perNight":숫자 또는 null,"currency":"","note":""}}`);
+      const f=res.flight||{}, h=res.hotel||{}; let note=[];
+      if (f.amount){ const krw = (f.currency||'KRW').toUpperCase()==='KRW' ? num(f.amount) : Math.round(num(f.amount)*(num(t.rateToday)||t.rate||1500));
+        t.flight=krw; note.push(`항공 ${f.fareName||'이코노미 최고 요금'} ${won(krw)}원(1인${f.currency&&f.currency!=='KRW'?`, ${f.amount} ${f.currency} 환산`:''})`); }
+      else note.push('항공 요금을 찾지 못했습니다'+(f.note?`(${f.note})`:'')+' → 요금 화면 캡처를 올려 주세요');
+      if (h.perNight) note.push(`숙박 1박 ${h.perNight} ${h.currency||''} (예산은 여비 한도로 계산)`); else if (t.hotelLink) note.push('숙박 요금 확인 불가'+(h.note?`(${h.note})`:''));
+      t.linkNote=note.join(' · ')+` · 조회 ${today()}`; renderInput($('#main'));
+    }catch(e){ msg.textContent = e.code==='no_sample' ? '설정에서 API 키를 넣어 주세요.' : '링크를 읽지 못했습니다: '+e.message+' → 요금 화면 캡처를 올려 주세요.'; }
+  };
   const fr=$('#fetchRate'); if (fr) fr.onclick=async e=>{ e.preventDefault(); collect();
     try{ const j=await (await fetch('https://open.er-api.com/v6/latest/USD')).json(); const v=j?.rates?.KRW; if(!v) throw new Error('값 없음');
       t.rateToday=String(Math.round(v*100)/100); t.rateSource=`ExchangeRate-API ${j.time_last_update_utc||''}`; renderInput($('#main')); toast('오늘 환율을 불러왔습니다. 구글 값과 다르면 고쳐 주세요.'); }
