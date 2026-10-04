@@ -927,6 +927,12 @@ ${texts.join('\n\n').slice(0,(lim.maxPromptBytes||60000)/3)}`, images.length && 
     if (res.hotelKRW && !t.hotel) t.hotel=num(res.hotelKRW);
     if (res.feeEvent && !t.feeEvent) t.feeEvent=res.feeEvent;
     if (res.feePayee && !t.feePayee) t.feePayee=res.feePayee;
+    // 공문·견적서에서 읽은 분담금 항목: 비어 있거나 금액이 0인 항목만 채운다
+    if (res.feeRows?.length){ t.feeRows=t.feeRows||[]; if (!t.kinds.fee){ t.kinds.fee=true; }
+      for (const fr of res.feeRows){ const amt=num(fr.amt); if (!amt) continue;
+        const hit=t.feeRows.find(x=>x.label===fr.label || (fr.label||'').includes(x.label) || (x.label||'').includes(fr.label||'#'));
+        if (hit){ if (!hit.amt) hit.amt=amt; } else t.feeRows.push({cat: /분담금|참가비|회비/.test(fr.label)?'분담금':'홍보비', label: fr.label||'분담금', amt}); }
+      const blank=t.feeRows.findIndex(x=>!x.amt && x.label==='분담금 납부'); if (blank>=0 && t.feeRows.some(x=>x.amt && x!==t.feeRows[blank] && /분담금|참가비|회비/.test(x.label))) t.feeRows.splice(blank,1); }
     if (res.activities) t.sourceNotes=res.activities;
     t.readUnsure=res.unsure||[];
     renderInput($('#main'));
@@ -1546,7 +1552,7 @@ function renderRes(m){
       <div class="row" style="justify-content:space-between">
         <div><span class="chip">상위 승인</span> <b>${esc(docTitle(ap))}</b><br>
           <span class="note">${apLabel(ap)} · ${esc(ap.budget.b)} ${esc(ap.budget.nc)} · ${ap.kind==='travel'?(ap.pay==='corp'?'법인카드':'개인카드'):'계좌이체'} · 승인공문 ${ap.approvalDoc?'<span class="pill ok">연결됨</span>':'<span class="pill warn">미연결</span>'}</span></div>
-        <button class="btn" id="backAp">승인으로</button>
+        <div class="row">${ap.approvalDoc?'':'<label class="btn">승인공문 올리기<input type="file" id="resApDoc" accept=".pdf,image/*" hidden></label>'}<button class="btn" id="backAp">승인으로</button></div>
       </div>
     </div>
     <div class="row" style="justify-content:space-between;margin-bottom:10px">
@@ -1557,6 +1563,8 @@ function renderRes(m){
     <div class="seg" style="margin-bottom:16px">${tabs.map(([k,n])=>`<button type="button" data-rtab="${k}" class="${S.resTab===k?'on':''}">${n}</button>`).join('')}</div>
     <div id="resBody"></div>`;
   $('#backAp').onclick = () => { S.view='review'; render(); };
+  const rad = $('#resApDoc'); if (rad) rad.onchange = async e => { const f=e.target.files[0]; if(!f) return; const rec={id:uid(), name:f.name, type:f.type||'application/pdf'}; blobCache.set(rec.id,f);
+    try { Object.assign(rec, await Files.put(f, rec.id)); } catch {} ap.approvalDoc=rec; await saveTrip(t); renderRes($('#main')); renderTree(); toast('승인공문을 연결했습니다'); };
   document.querySelectorAll('[data-res]').forEach(b => b.onclick = () => { S.resId = b.dataset.res; render(); });
   document.querySelectorAll('[data-rtab]').forEach(b => b.onclick = () => { S.resTab = b.dataset.rtab; render(); });
   const body = $('#resBody');
@@ -1969,8 +1977,9 @@ function renderFeeSettle(el, t, ap, rs){
       <div class="card stack">
         <h2>지급 항목 <span class="chip">승인 때 금액 → 실제 지급액</span></h2>
         <div style="overflow-x:auto"><table class="rtab"><thead><tr><th>항목</th><th>승인액</th><th>금회 지급액</th><th>잔액</th></tr></thead><tbody>
-          ${items.map((x,i)=>`<tr><td>${esc(x.item)}</td><td class="mono">${won(x.approved)}</td><td><input type="text" data-fp="${i}" value="${won(x.now)}" style="width:9em"></td><td class="mono">${won(x.approved-num(x.now))}</td></tr>`).join('') || '<tr><td colspan="4" class="note">승인에 분담금 항목이 없습니다.</td></tr>'}
+          ${items.map((x,i)=>`<tr><td>${esc(x.item)}</td><td><input type="text" data-fa="${i}" value="${won(x.approved)}" style="width:9em"></td><td><input type="text" data-fp="${i}" value="${won(x.now)}" style="width:9em"></td><td class="mono">${won(x.approved-num(x.now))}</td></tr>`).join('') || '<tr><td colspan="4" class="note">승인에 분담금 항목이 없습니다.</td></tr>'}
         </tbody></table></div>
+        ${items.length && items.every(x=>!x.approved) ? '<div class="flag">승인 때 분담금 금액이 비어 있었습니다. 승인액을 넣으면 승인 운영계획서 금액도 같이 바뀝니다(이미 낸 승인 문서라면 실제 승인 금액과 맞춰 주세요).</div>' : ''}
       </div>
       <div class="card stack">
         <h2>지급서류</h2>
@@ -1979,6 +1988,9 @@ function renderFeeSettle(el, t, ap, rs){
       </div>
     </div>`;
   const save = async () => { await saveTrip(t); renderRes($('#main')); };
+  document.querySelectorAll('[data-fa]').forEach(el => el.onchange = () => { const i=+el.dataset.fa; t.feeRows[i].amt = num(el.value);
+    rs.feePaid = rs.feePaid || {}; if (!rs.feePaid[i]) rs.feePaid[i] = t.feeRows[i].amt;   // 지급액이 비어 있거나 0이면 승인액으로 채움
+    save(); });
   document.querySelectorAll('[data-fp]').forEach(el => el.onchange = () => { rs.feePaid = rs.feePaid || {}; rs.feePaid[el.dataset.fp] = num(el.value); rs.settledTotal = feeItems(t, ap, rs).reduce((s,x)=>s+num(x.now),0); save(); });
   document.querySelectorAll('[data-evr]').forEach(el => el.onchange = () => { rs.evid[el.dataset.evr].role = el.value; save(); });
   document.querySelectorAll('[data-evdel]').forEach(b => b.onclick = async () => { const f = rs.evid.splice(+b.dataset.evdel,1)[0]; await Files.remove(f); save(); });
