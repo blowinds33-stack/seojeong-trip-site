@@ -1,6 +1,8 @@
 # 서정 출장서류
 
-서정대학교 입학본부 출장 승인·결의 서류 작성 웹앱 (공개 배포본).
+서정대학교 입학본부 업무 화면 공개 배포본.
+
+- **출장 서류 공개본(index.html)은 2026-10-15에 내렸습니다.** 출장 서류는 서버판 https://seojeong-trip.blowinds33.workers.dev 에서 씁니다. `index.html`은 안내 페이지입니다.
 
 - 사이트: https://blowinds33-stack.github.io/seojeong-trip-site/
 - 출장 기록과 올린 파일은 사용하는 **브라우저 안에만** 저장됩니다. 이 저장소와 사이트에는 업무 자료가 없습니다.
